@@ -314,15 +314,18 @@ QUERY SearchFilteredDocuments(query: String, minDate: I64) =>
 
 ### Prefiltering (Future)
 
-Filter before vector search for better performance:
+Filter before vector search for better performance using PREFILTER:
 
 ```hql
-// Coming soon
 QUERY SearchWithPrefilter(query: String) =>
     results <- SearchV<Document>(Embed(query), 100)
         ::PREFILTER(_::{published}::EQ(true))
     RETURN results
 ```
+
+<Info>
+PREFILTER applies the filter before performing the vector search, which can significantly improve performance when the filter reduces the candidate set substantially.
+</Info>
 
 ## Complete Examples
 

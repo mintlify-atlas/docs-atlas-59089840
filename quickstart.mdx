@@ -1,80 +1,326 @@
 ---
-title: "Quickstart"
-description: "Start building awesome documentation in minutes"
+title: Quickstart
+description: Get up and running with HelixDB in minutes
 ---
 
-## Get started in three steps
+Get your first HelixDB instance running and execute your first query in under 5 minutes.
 
-Get your documentation site running locally and make your first customization.
+## Prerequisites
 
-### Step 1: Set up your local environment
+<Warning>
+Before you begin, ensure you have:
+- **Docker** installed and running (for local deployment)
+- **curl** or a package manager (npm, brew, etc.)
+- Basic knowledge of databases and query languages
+</Warning>
 
-<AccordionGroup>
-  <Accordion icon="copy" title="Clone your docs locally">
-    During the onboarding process, you created a GitHub repository with your docs content if you didn't already have one. You can find a link to this repository in your [dashboard](https://dashboard.mintlify.com).
-    
-    To clone the repository locally so that you can make and preview changes to your docs, follow the [Cloning a repository](https://docs.github.com/en/repositories/creating-and-managing-repositories/cloning-a-repository) guide in the GitHub docs.
-  </Accordion>
-  <Accordion icon="rectangle-terminal" title="Start the preview server">
-    1. Install the Mintlify CLI: `npm i -g mint`
-    2. Navigate to your docs directory and run: `mint dev`
-    3. Open `http://localhost:3000` to see your docs live!
-    
-    <Tip>Your preview updates automatically as you edit files.</Tip>
-  </Accordion>
-</AccordionGroup>
+## Install the CLI
 
-### Step 2: Deploy your changes
+<Steps>
+  <Step title="Install the Helix CLI">
+    The fastest way to get started is using the install script:
 
-<AccordionGroup>
-  <Accordion icon="github" title="Install our GitHub app">
-    Install the Mintlify GitHub app from your [dashboard](https://dashboard.mintlify.com/settings/organization/github-app).
-    
-    Our GitHub app automatically deploys your changes to your docs site, so you don't need to manage deployments yourself.
-</Accordion>
-<Accordion icon="palette" title="Update your site name and colors">
-    For a first change, let's update the name and colors of your docs site.
+    ```bash
+    curl -sSL "https://install.helix-db.com" | bash
+    ```
 
-    1. Open `docs.json` in your editor.
-    2. Change the `"name"` field to your project name.
-    3. Update the `"colors"` to match your brand.
-    4. Save and see your changes instantly at `http://localhost:3000`.
+    Or install manually:
 
-    <Tip>Try changing the primary color to see an immediate difference!</Tip>
-  </Accordion>
-</AccordionGroup>
+    <CodeGroup>
+    ```bash npm
+    npm install -g helix-cli
+    ```
 
-### Step 3: Go live
+    ```bash brew
+    brew install helixdb/tap/helix
+    ```
 
-<Accordion icon="rocket" title="Publish your docs">
-  1. Commit and push your changes.
-  2. Your docs will update and be live in moments!
-</Accordion>
+    ```bash cargo
+    cargo install helix-cli
+    ```
+    </CodeGroup>
 
-## Next steps
+    Verify the installation:
 
-Now that you have your docs running, explore these key features:
+    ```bash
+    helix --version
+    ```
+  </Step>
+
+  <Step title="Initialize a new project">
+    Create a new directory for your project and initialize it:
+
+    ```bash
+    mkdir my-helix-project
+    cd my-helix-project
+    helix init
+    ```
+
+    This creates:
+    - `helix.toml` - Project configuration
+    - `db/schema.hx` - Schema definitions
+    - `db/queries.hx` - Query definitions
+    - `.gitignore` - Git ignore rules
+  </Step>
+
+  <Step title="Define your schema">
+    Open `db/schema.hx` and define your first data model:
+
+    ```hql db/schema.hx
+    N::User {
+        INDEX email: String,
+        name: String,
+        age: U32
+    }
+
+    E::Follows {
+        From: User,
+        To: User,
+        Properties: {
+            since: Date
+        }
+    }
+
+    V::Document {
+        INDEX title: String,
+        content: String
+    }
+    ```
+
+    <Info>
+    - `N::` defines nodes in the graph
+    - `E::` defines edges (relationships)
+    - `V::` defines vectors for semantic search
+    - `INDEX` creates fast lookup indices
+    </Info>
+  </Step>
+
+  <Step title="Write your queries">
+    Open `db/queries.hx` and add queries to interact with your data:
+
+    ```hql db/queries.hx
+    QUERY CreateUser(email: String, name: String, age: U32) =>
+        user <- AddN<User>({email: email, name: name, age: age})
+        RETURN user
+
+    QUERY GetUserByEmail(email: String) =>
+        user <- N<User>({email: email})
+        RETURN user
+
+    QUERY CreateFollowRelationship(follower_id: ID, following_id: ID) =>
+        follower <- N<User>(follower_id)
+        following <- N<User>(following_id)
+        edge <- AddE<Follows>::From(follower)::To(following)::VALUES({since: NOW})
+        RETURN edge
+
+    QUERY GetFollowers(user_id: ID) =>
+        user <- N<User>(user_id)
+        followers <- user::InE<Follows>::FromN
+        RETURN followers
+
+    QUERY SearchDocuments(query: String) =>
+        results <- SearchV<Document>(Embed(query), 10)
+        RETURN results
+    ```
+  </Step>
+
+  <Step title="Build and start your instance">
+    Build and start your local HelixDB instance:
+
+    ```bash
+    helix build
+    helix push dev
+    ```
+
+    Your database is now running on `http://localhost:6969`!
+
+    <Tip>
+    The first build may take a few minutes as Docker pulls the necessary images.
+    </Tip>
+  </Step>
+
+  <Step title="Call your queries">
+    Now you can interact with your database using the SDKs or curl:
+
+    <Tabs>
+      <Tab title="TypeScript">
+        Install the SDK:
+
+        ```bash
+        npm install helix-ts
+        ```
+
+        Use it in your code:
+
+        ```typescript
+        import HelixDB from "helix-ts";
+
+        const client = new HelixDB();
+
+        // Create a user
+        const user = await client.query("CreateUser", {
+          email: "alice@example.com",
+          name: "Alice",
+          age: 30
+        });
+
+        console.log("Created user:", user);
+
+        // Get user by email
+        const foundUser = await client.query("GetUserByEmail", {
+          email: "alice@example.com"
+        });
+
+        console.log("Found user:", foundUser);
+        ```
+      </Tab>
+
+      <Tab title="Python">
+        Install the SDK:
+
+        ```bash
+        pip install helix-py
+        ```
+
+        Use it in your code:
+
+        ```python
+        from helix import HelixDB
+
+        client = HelixDB()
+
+        # Create a user
+        user = client.query("CreateUser", {
+            "email": "alice@example.com",
+            "name": "Alice",
+            "age": 30
+        })
+
+        print("Created user:", user)
+
+        # Get user by email
+        found_user = client.query("GetUserByEmail", {
+            "email": "alice@example.com"
+        })
+
+        print("Found user:", found_user)
+        ```
+      </Tab>
+
+      <Tab title="cURL">
+        ```bash
+        # Create a user
+        curl -X POST http://localhost:6969/query/CreateUser \
+          -H "Content-Type: application/json" \
+          -d '{
+            "email": "alice@example.com",
+            "name": "Alice",
+            "age": 30
+          }'
+
+        # Get user by email
+        curl -X POST http://localhost:6969/query/GetUserByEmail \
+          -H "Content-Type: application/json" \
+          -d '{
+            "email": "alice@example.com"
+          }'
+        ```
+      </Tab>
+    </Tabs>
+  </Step>
+</Steps>
+
+## Manage Your Instance
+
+View your running instances:
+
+```bash
+helix status
+```
+
+Stop your instance:
+
+```bash
+helix stop dev
+```
+
+View logs:
+
+```bash
+helix logs dev
+```
+
+## Next Steps
+
+Now that you have HelixDB running, explore these guides:
 
 <CardGroup cols={2}>
-
-<Card title="Write Content" icon="pen-to-square" href="/essentials/markdown">
-  Learn MDX syntax and start writing your documentation.
-</Card>
-
-<Card title="Customize style" icon="palette" href="/essentials/settings">
-  Make your docs match your brand perfectly.
-</Card>
-
-<Card title="Add code examples" icon="square-code" href="/essentials/code">
-  Include syntax-highlighted code blocks.
-</Card>
-
-<Card title="API documentation" icon="code" href="/api-reference/introduction">
-  Auto-generate API docs from OpenAPI specs.
-</Card>
-
+  <Card title="Build RAG Applications" icon="book-open" href="/guides/rag-applications">
+    Learn how to build retrieval-augmented generation systems
+  </Card>
+  <Card title="Vector Search" icon="magnifying-glass" href="/guides/vector-search">
+    Implement semantic search with embeddings
+  </Card>
+  <Card title="Graph Traversals" icon="diagram-project" href="/guides/graph-traversals">
+    Query complex relationships in your data
+  </Card>
+  <Card title="HelixQL Reference" icon="code" href="/hql/overview">
+    Master the HelixQL query language
+  </Card>
 </CardGroup>
 
-<Note>
-  **Need help?** See our [full documentation](https://mintlify.com/docs) or join our [community](https://mintlify.com/community).
-</Note>
+## Troubleshooting
+
+<AccordionGroup>
+  <Accordion title="Port 6969 is already in use">
+    Change the port in `helix.toml`:
+
+    ```toml
+    [instances.dev]
+    port = 7000
+    ```
+
+    Then rebuild:
+
+    ```bash
+    helix build
+    helix push dev
+    ```
+  </Accordion>
+
+  <Accordion title="Docker daemon not running">
+    Ensure Docker Desktop is running:
+
+    ```bash
+    # macOS
+    open -a Docker
+
+    # Linux
+    sudo systemctl start docker
+    ```
+  </Accordion>
+
+  <Accordion title="Compilation errors">
+    Run `helix check` to validate your HQL files:
+
+    ```bash
+    helix check
+    ```
+
+    This will show detailed error messages with line numbers.
+  </Accordion>
+
+  <Accordion title="Connection refused">
+    Verify the instance is running:
+
+    ```bash
+    helix status
+    ```
+
+    If not running, start it:
+
+    ```bash
+    helix start dev
+    ```
+  </Accordion>
+</AccordionGroup>
