@@ -1,0 +1,133 @@
+{
+  "projectType": "data-platform",
+  "projectName": "HelixDB",
+  "projectDescription": "An open-source graph-vector database built from scratch in Rust for AI and RAG applications",
+  "theme": "aspen",
+  "primaryColor": "#ff7f17",
+  "lightColor": "#1a1a1a",
+  "darkColor": "#d2d2d2",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "quickstart",
+              "installation"
+            ]
+          },
+          {
+            "group": "Core Concepts",
+            "pages": [
+              "concepts/overview",
+              "concepts/data-model",
+              "concepts/graph-vector-architecture",
+              "concepts/type-safety"
+            ]
+          },
+          {
+            "group": "HelixQL",
+            "pages": [
+              "hql/overview",
+              "hql/schema",
+              "hql/queries",
+              "hql/traversals",
+              "hql/vectors",
+              "hql/migrations"
+            ]
+          },
+          {
+            "group": "CLI Reference",
+            "pages": [
+              "cli/overview",
+              "cli/init",
+              "cli/build",
+              "cli/push",
+              "cli/check",
+              "cli/instances",
+              "cli/cloud"
+            ]
+          },
+          {
+            "group": "Guides",
+            "pages": [
+              "guides/rag-applications",
+              "guides/embeddings",
+              "guides/vector-search",
+              "guides/graph-traversals",
+              "guides/mcp-integration",
+              "guides/local-deployment",
+              "guides/cloud-deployment"
+            ]
+          },
+          {
+            "group": "SDKs",
+            "pages": [
+              "sdks/overview",
+              "sdks/typescript",
+              "sdks/python"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "API Reference",
+        "groups": [
+          {
+            "group": "Language Reference",
+            "pages": [
+              "api/node-definitions",
+              "api/edge-definitions",
+              "api/vector-definitions",
+              "api/query-syntax",
+              "api/operations",
+              "api/functions",
+              "api/data-types"
+            ]
+          },
+          {
+            "group": "Advanced",
+            "pages": [
+              "advanced/performance",
+              "advanced/storage-engine",
+              "advanced/indexing",
+              "advanced/security",
+              "advanced/migrations"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "Graph + Vector data model",
+    "Type-safe HelixQL query language",
+    "Built-in embeddings support",
+    "MCP tools for AI agents",
+    "Vector search with HNSW",
+    "BM25 keyword search",
+    "Graph traversals",
+    "Ultra-low latency (Rust + LMDB)",
+    "Secure by default with compiled queries"
+  ],
+  "publicApiSurface": [
+    "helix init - Initialize new project",
+    "helix build - Build instance",
+    "helix push - Deploy/start instance",
+    "helix check - Validate queries",
+    "N:: - Node schema definition",
+    "E:: - Edge schema definition",
+    "V:: - Vector schema definition",
+    "QUERY - Query definition",
+    "AddN - Create node",
+    "AddE - Create edge",
+    "AddV - Create vector",
+    "Graph traversal operators",
+    "Vector search operations",
+    "BM25 search",
+    "MIGRATION - Schema migrations"
+  ]
+}
