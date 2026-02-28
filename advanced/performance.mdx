@@ -1,0 +1,585 @@
+---
+title: 'Performance Tuning'
+description: 'Optimize HelixDB for maximum throughput and minimal latency'
+icon: 'gauge-high'
+---
+
+## Overview
+
+HelixDB performance depends on several factors: LMDB configuration, HNSW parameters, query patterns, and hardware. This guide provides tuning recommendations for different workloads.
+
+## LMDB Storage Tuning
+
+### Database Size Configuration
+
+<ParamField path="db_max_size_gb" type="integer" default="100">
+  Maximum database size in gigabytes
+  
+  **Impact**: Memory-mapped file size
+  
+  **Recommendations**:
+  - Development: 10-50 GB
+  - Production (small): 100-500 GB
+  - Production (large): 500-9998 GB (LMDB max)
+  
+  ```rust
+  Config {
+      db_max_size_gb: Some(500),
+      ...
+  }
+  ```
+</ParamField>
+
+<Warning>
+  LMDB maximum size is ~10TB (9998 GB). Setting higher values will be capped at 9998.
+  
+  Implementation: `/home/daytona/workspace/source/helix-db/src/helix_engine/storage_core/mod.rs:78-82`
+</Warning>
+
+### Reader Threads
+
+<ParamField path="max_readers" type="integer" default="200">
+  Maximum concurrent read transactions
+  
+  **Impact**: Concurrent query capacity
+  
+  **Recommendations**:
+  - Low concurrency: 50-100
+  - Medium concurrency: 200-500
+  - High concurrency: 500-1000
+</ParamField>
+
+```rust
+EnvOpenOptions::new()
+    .max_readers(500)  // Adjust based on concurrent queries
+    .open(path)?;
+```
+
+<Info>
+  Reader configuration: `/home/daytona/workspace/source/helix-db/src/helix_engine/storage_core/mod.rs:88`
+</Info>
+
+### Database Count
+
+<ParamField path="max_dbs" type="integer" default="200">
+  Maximum number of named databases (tables)
+  
+  **Usage**: Base tables + vector indices + secondary indices + BM25 indices
+  
+  **Formula**: `10 (base) + (vector_types * 3) + secondary_indices + (bm25_types * 4)`
+</ParamField>
+
+<Note>
+  Each vector type creates 3 databases: vectors, layers, metadata
+  
+  Each BM25-indexed type creates 4 databases: inverted index, doc lengths, term frequencies, metadata
+</Note>
+
+## HNSW Vector Index Tuning
+
+### Core Parameters
+
+<ParamField path="m" type="integer" default="16">
+  **Parameter**: Number of bidirectional links per layer
+  
+  **Impact**:
+  - Higher = Better recall, more memory, slower insertion
+  - Lower = Lower recall, less memory, faster insertion
+  
+  **Memory impact**: ~`m * 32 bytes` per vector per layer
+  
+  **Recommendations**:
+  | Dataset Size | m Value | Use Case |
+  |-------------|---------|----------|
+  | < 10K | 8-12 | Fast insertion, lower recall acceptable |
+  | 10K-100K | 12-16 | Balanced performance |
+  | 100K-1M | 16-24 | Production workloads |
+  | > 1M | 24-48 | High recall requirements |
+</ParamField>
+
+<ParamField path="ef_construction" type="integer" default="200">
+  **Parameter**: Size of dynamic candidate list during index construction
+  
+  **Impact**:
+  - Higher = Better index quality, slower insertion
+  - Lower = Lower index quality, faster insertion
+  
+  **Recommendations**:
+  | Priority | ef_construction | Build Time | Quality |
+  |----------|----------------|------------|----------|
+  | Speed | 100-150 | Fast | Good |
+  | Balanced | 200-300 | Medium | Very Good |
+  | Quality | 400-500 | Slow | Excellent |
+</ParamField>
+
+<ParamField path="ef_search" type="integer" default="50">
+  **Parameter**: Size of dynamic candidate list during search
+  
+  **Impact**:
+  - Higher = Better recall, slower queries
+  - Lower = Lower recall, faster queries
+  
+  **Recommendations**:
+  | Recall Target | ef_search | Query Speed |
+  |--------------|-----------|-------------|
+  | 90% | 30-50 | Fast |
+  | 95% | 50-100 | Medium |
+  | 99% | 100-200 | Slow |
+  | 99.5%+ | 200-500 | Very Slow |
+</ParamField>
+
+### Configuration Example
+
+```rust
+use helix_db::traversal_core::config::Config;
+
+let config = Config {
+    db_max_size_gb: Some(500),
+    vector_config: Some(VectorConfig {
+        m: 24,                 // High-quality index
+        ef_construction: 300,  // Balanced build time
+        ef_search: 100,        // 95%+ recall
+    }),
+    ..Default::default()
+};
+```
+
+<Info>
+  HNSW configuration: `/home/daytona/workspace/source/helix-db/src/helix_engine/storage_core/mod.rs:177-186`
+</Info>
+
+### Memory Usage Estimation
+
+**HNSW memory formula**:
+```
+memory_bytes = num_vectors * (
+    vector_dim * 8 +           // Vector data (F64)
+    m * 32 * avg_layers +      // Neighbor links
+    metadata_overhead           // Properties, labels
+)
+```
+
+**Example calculation** (1M vectors, 768 dims, m=16):
+```
+vector_data = 1M * 768 * 8 = 6.1 GB
+links = 1M * 16 * 32 * 1.5 = 768 MB  (avg 1.5 layers)
+metadata = 1M * 200 = 200 MB         (estimate)
+
+Total ≈ 7.1 GB
+```
+
+<Note>
+  Actual memory usage varies based on:
+  - Vector dimensionality
+  - Number of layers (determined by data structure)
+  - Property sizes
+  - Operating system page caching
+</Note>
+
+## BM25 Full-Text Search Tuning
+
+### BM25 Parameters
+
+<ParamField path="k1" type="float" default="1.2">
+  Term frequency saturation parameter
+  
+  **Impact**: Controls how quickly term frequency impact plateaus
+  
+  **Range**: 1.2-2.0 (typical)
+  
+  **Recommendations**:
+  - Short documents: 1.2-1.5
+  - Medium documents: 1.5-1.8
+  - Long documents: 1.8-2.0
+</ParamField>
+
+<ParamField path="b" type="float" default="0.75">
+  Document length normalization parameter
+  
+  **Impact**: How much document length affects scoring
+  
+  **Range**: 0.0-1.0
+  - 0.0: No length normalization
+  - 0.75: Standard normalization
+  - 1.0: Full length normalization
+  
+  **Recommendations**:
+  - Similar-length docs: 0.3-0.5
+  - Variable-length docs: 0.75 (default)
+  - Very variable lengths: 0.9-1.0
+</ParamField>
+
+<Info>
+  BM25 configuration: `/home/daytona/workspace/source/helix-db/src/helix_engine/bm25/bm25.rs:26-32`
+</Info>
+
+### BM25 Memory Usage
+
+**Per indexed document**:
+- Inverted index: ~50-200 bytes per unique term
+- Doc lengths: 8 bytes
+- Term frequencies: Variable (depends on vocabulary)
+
+**Optimization tips**:
+1. Remove stop words during tokenization
+2. Use stemming to reduce vocabulary
+3. Set appropriate document length limits
+
+## Query Optimization
+
+### Index Usage
+
+<AccordionGroup>
+  <Accordion title="Use indexed fields for lookups">
+    Lookups by indexed fields are O(log n) instead of O(n):
+    
+    ```hql
+    // Fast: Uses UNIQUE INDEX
+    N<User>({email: "user@example.com"})
+    
+    // Slow: Full scan
+    N<User>::WHERE(_.email == "user@example.com")
+    ```
+  </Accordion>
+  
+  <Accordion title="Filter early in traversal">
+    Apply WHERE filters before expensive operations:
+    
+    ```hql
+    // Good: Filter first
+    N<Post>
+    ::WHERE(_.published == true)
+    ::ORDER<Desc>(_.created_at)
+    ::RANGE(0, 10)
+    
+    // Bad: Sort everything first
+    N<Post>
+    ::ORDER<Desc>(_.created_at)
+    ::WHERE(_.published == true)
+    ::RANGE(0, 10)
+    ```
+  </Accordion>
+  
+  <Accordion title="Use RANGE for pagination">
+    RANGE is implemented as lazy evaluation:
+    
+    ```hql
+    N<User>
+    ::ORDER<Asc>(_.name)
+    ::RANGE(page * 20, (page + 1) * 20)  // Only processes needed rows
+    ```
+  </Accordion>
+  
+  <Accordion title="Minimize data in RETURN">
+    Only return fields you need:
+    
+    ```hql
+    // Good: Minimal data
+    RETURN {id: _.id, name: _.name}
+    
+    // Bad: Returns everything
+    RETURN _
+    ```
+  </Accordion>
+</AccordionGroup>
+
+### Vector Search Optimization
+
+<AccordionGroup>
+  <Accordion title="Adjust ef_search dynamically">
+    Lower ef_search for fast approximate results:
+    
+    ```hql
+    // Fast, lower recall
+    SearchV<Embedding>(query, 10)  // Uses default ef_search=50
+    
+    // Adjust ef_search in config for higher recall
+    ```
+  </Accordion>
+  
+  <Accordion title="Filter after search, not during">
+    Filtering during HNSW search is expensive. Search first, filter after:
+    
+    ```hql
+    // Good: Filter post-search
+    SearchV<ProductEmbedding>(Embed(query), limit * 3)
+    ::WHERE(_.category == category)
+    ::RANGE(0, limit)
+    
+    // Less efficient: Pre-filter would require index scan
+    ```
+  </Accordion>
+  
+  <Accordion title="Batch vector operations">
+    Use BatchAddV instead of multiple AddV:
+    
+    ```hql
+    // Good: Single batch operation
+    BatchAddV<Embedding>(vectors)
+    
+    // Bad: Multiple individual inserts
+    FOR vec IN vectors {
+      AddV<Embedding>(vec.data, vec.props)
+    }
+    ```
+  </Accordion>
+</AccordionGroup>
+
+### Graph Traversal Optimization
+
+<AccordionGroup>
+  <Accordion title="Use specific edge types">
+    Filter by edge type early:
+    
+    ```hql
+    // Good: Type-specific traversal
+    N({id: user_id})::OutE<FOLLOWS>::ToN
+    
+    // Bad: Get all edges then filter
+    N({id: user_id})::OutE()::WHERE(_.type == "FOLLOWS")::ToN
+    ```
+  </Accordion>
+  
+  <Accordion title="Limit traversal depth">
+    Deep traversals can be expensive:
+    
+    ```hql
+    // Potentially expensive: Unbounded depth
+    N({id: user_id})
+    ::Out<FOLLOWS>
+    ::Out<FOLLOWS>
+    ::Out<FOLLOWS>  // Friends of friends of friends
+    
+    // Better: Add RANGE to limit results
+    ::RANGE(0, 100)
+    ```
+  </Accordion>
+  
+  <Accordion title="Use path algorithms efficiently">
+    Choose the right algorithm:
+    
+    ```hql
+    // Unweighted: Use BFS (fastest)
+    ShortestPathBFS<FOLLOWS>
+    
+    // Weighted: Use Dijkstra
+    ShortestPathDijkstras<ROAD>(_.distance)
+    
+    // Spatial: Use A* with heuristic
+    ShortestPathAStar<ROAD>(_.distance, "euclidean")
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## Batch Operations
+
+### Bulk Inserts
+
+<AccordionGroup>
+  <Accordion title="Use transactions efficiently">
+    Group operations in transactions:
+    
+    ```hql
+    // Good: Single query with loop
+    QUERY batch_insert(items: [{name: String}]) =>
+      FOR item IN items {
+        AddN<Item>({name: item.name})
+      }
+    RETURN true
+    
+    // Bad: Multiple separate queries
+    // Each query = separate transaction
+    ```
+  </Accordion>
+  
+  <Accordion title="Batch size considerations">
+    For very large batches (>10K items), split into chunks:
+    
+    ```hql
+    // Process in chunks of 1000
+    QUERY bulk_insert_chunked(items: [Item]) =>
+      FOR chunk IN chunks(items, 1000) {
+        FOR item IN chunk {
+          AddN<Item>(item)
+        }
+      }
+    RETURN true
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## Hardware Considerations
+
+### Storage
+
+<ParamField path="SSD vs HDD">
+  **SSD (Recommended)**:
+  - 10-100x faster random access
+  - Critical for graph traversals
+  - Required for good vector search performance
+  
+  **HDD (Not recommended)**:
+  - Acceptable only for sequential scans
+  - Will bottleneck on graph operations
+</ParamField>
+
+<ParamField path="NVMe vs SATA SSD">
+  **NVMe SSD (Best)**:
+  - 3-6x faster than SATA SSD
+  - Lower latency
+  - Better for high-throughput workloads
+  
+  **SATA SSD (Good)**:
+  - Sufficient for most workloads
+  - Cost-effective
+</ParamField>
+
+### Memory
+
+<ParamField path="RAM sizing">
+  **Minimum**: Database size + 4 GB
+  
+  **Recommended**: 2-3x database size
+  
+  **Reasoning**:
+  - LMDB uses memory-mapped files
+  - OS page cache improves performance dramatically
+  - More RAM = more hot data in memory
+  
+  **Example**:
+  - 100 GB database → 16-32 GB RAM minimum, 64-128 GB ideal
+  - 500 GB database → 64-128 GB RAM minimum, 256+ GB ideal
+</ParamField>
+
+### CPU
+
+<ParamField path="Core count">
+  **Impact**:
+  - LMDB read transactions are concurrent
+  - Write transactions are serialized
+  - Vector search can utilize multiple cores
+  
+  **Recommendations**:
+  - Read-heavy: 8-16 cores
+  - Balanced: 16-32 cores
+  - Write-heavy: 8-16 fast cores (higher clock speed)
+</ParamField>
+
+## Monitoring and Profiling
+
+### Key Metrics
+
+<AccordionGroup>
+  <Accordion title="Query latency">
+    Monitor query execution time:
+    - p50: Should be < 10ms for simple queries
+    - p95: Should be < 100ms for simple queries
+    - p99: Should be < 500ms for complex queries
+  </Accordion>
+  
+  <Accordion title="Throughput">
+    Measure queries per second:
+    - Read-heavy: 1K-10K qps (depending on complexity)
+    - Write-heavy: 100-1K qps (writes are serialized)
+    - Mixed: 500-5K qps
+  </Accordion>
+  
+  <Accordion title="Cache hit rate">
+    OS page cache effectiveness:
+    - > 90% = Good (most data in memory)
+    - < 70% = Consider more RAM or query optimization
+  </Accordion>
+  
+  <Accordion title="Vector recall">
+    Measure search quality:
+    - Test against ground truth
+    - Adjust ef_search to meet targets
+    - Typical targets: 90-95% recall
+  </Accordion>
+</AccordionGroup>
+
+## Performance Testing
+
+### Benchmarking Vector Search
+
+```rust
+// Benchmark configuration
+let recall_test_vectors = generate_test_queries(1000);
+let ground_truth = compute_exact_neighbors(recall_test_vectors, k=10);
+
+// Test different ef_search values
+for ef in [10, 20, 50, 100, 200, 500] {
+    let results = search_with_ef(test_vectors, ef);
+    let recall = compute_recall(results, ground_truth);
+    let latency = measure_latency(results);
+    
+    println!("ef={}: recall={:.2}%, latency={:.2}ms", 
+             ef, recall * 100.0, latency);
+}
+```
+
+<Info>
+  Benchmark implementations: `/home/daytona/workspace/source/helix-db/benches/hnsw_benches.rs`
+</Info>
+
+### Load Testing
+
+```rust
+// Concurrent query load test
+let num_threads = 16;
+let queries_per_thread = 1000;
+
+let results = parallel_execute(num_threads, || {
+    for _ in 0..queries_per_thread {
+        execute_query(random_query());
+    }
+});
+
+let total_qps = (num_threads * queries_per_thread) / results.elapsed_secs;
+println!("Throughput: {} qps", total_qps);
+```
+
+## Best Practices Summary
+
+<CardGroup cols={2}>
+  <Card title="Storage" icon="database">
+    - Use SSD (preferably NVMe)
+    - Size RAM at 2-3x database size
+    - Set db_max_size_gb appropriately
+  </Card>
+  
+  <Card title="HNSW" icon="vector-square">
+    - Start with defaults (m=16, ef=200/50)
+    - Tune m for recall/memory tradeoff
+    - Adjust ef_search for speed/recall balance
+  </Card>
+  
+  <Card title="Queries" icon="code">
+    - Use indexed fields for lookups
+    - Filter early in traversals
+    - Return only needed fields
+  </Card>
+  
+  <Card title="Operations" icon="play">
+    - Batch bulk operations
+    - Use transactions efficiently
+    - Choose appropriate algorithms
+  </Card>
+</CardGroup>
+
+## Related
+
+<CardGroup cols={2}>
+  <Card title="Storage Engine" icon="hard-drive" href="/advanced/storage-engine">
+    LMDB internals and configuration
+  </Card>
+  <Card title="Indexing" icon="magnifying-glass" href="/advanced/indexing">
+    Index types and configuration
+  </Card>
+  <Card title="Vector Definitions" icon="vector-square" href="/api/vector-definitions">
+    HNSW configuration in schemas
+  </Card>
+  <Card title="Query Syntax" icon="code" href="/api/query-syntax">
+    Writing efficient queries
+  </Card>
+</CardGroup>

@@ -1,122 +1,119 @@
 {
   "$schema": "https://mintlify.com/docs.json",
-  "theme": "mint",
-  "name": "Mint Starter Kit",
+  "name": "HelixDB",
+  "theme": "aspen",
   "colors": {
-    "primary": "#16A34A",
-    "light": "#07C983",
-    "dark": "#15803D"
+    "primary": "#ff7f17",
+    "light": "#1a1a1a",
+    "dark": "#d2d2d2"
   },
-  "favicon": "/favicon.svg",
+  "navbar": {
+    "primary": {
+      "type": "github",
+      "href": "https://github.com/HelixDB/helix-db"
+    }
+  },
+  "footer": {
+    "socials": {
+      "github": "https://github.com/HelixDB/helix-db",
+      "discord": "https://discord.gg/2stgMPr5BD",
+      "x": "https://x.com/helixdb"
+    }
+  },
   "navigation": {
     "tabs": [
       {
-        "tab": "Guides",
+        "tab": "Documentation",
         "groups": [
           {
-            "group": "Getting started",
+            "group": "Get Started",
             "pages": [
-              "index",
+              "introduction",
               "quickstart",
-              "development"
+              "installation"
             ]
           },
           {
-            "group": "Customization",
+            "group": "Core Concepts",
             "pages": [
-              "essentials/settings",
-              "essentials/navigation"
+              "concepts/overview",
+              "concepts/data-model",
+              "concepts/graph-vector-architecture",
+              "concepts/type-safety"
             ]
           },
           {
-            "group": "Writing content",
+            "group": "HelixQL",
             "pages": [
-              "essentials/markdown",
-              "essentials/code",
-              "essentials/images",
-              "essentials/reusable-snippets"
+              "hql/overview",
+              "hql/schema",
+              "hql/queries",
+              "hql/traversals",
+              "hql/vectors",
+              "hql/migrations"
             ]
           },
           {
-            "group": "AI tools",
+            "group": "CLI Reference",
             "pages": [
-              "ai-tools/cursor",
-              "ai-tools/claude-code",
-              "ai-tools/windsurf"
+              "cli/overview",
+              "cli/init",
+              "cli/build",
+              "cli/push",
+              "cli/check",
+              "cli/instances",
+              "cli/cloud"
+            ]
+          },
+          {
+            "group": "Guides",
+            "pages": [
+              "guides/rag-applications",
+              "guides/embeddings",
+              "guides/vector-search",
+              "guides/graph-traversals",
+              "guides/mcp-integration",
+              "guides/local-deployment",
+              "guides/cloud-deployment"
+            ]
+          },
+          {
+            "group": "SDKs",
+            "pages": [
+              "sdks/overview",
+              "sdks/typescript",
+              "sdks/python"
             ]
           }
         ]
       },
       {
-        "tab": "API reference",
+        "tab": "API Reference",
         "groups": [
           {
-            "group": "API documentation",
+            "group": "Language Reference",
             "pages": [
-              "api-reference/introduction"
+              "api/node-definitions",
+              "api/edge-definitions",
+              "api/vector-definitions",
+              "api/query-syntax",
+              "api/operations",
+              "api/functions",
+              "api/data-types"
             ]
           },
           {
-            "group": "Endpoint examples",
+            "group": "Advanced",
             "pages": [
-              "api-reference/endpoint/get",
-              "api-reference/endpoint/create",
-              "api-reference/endpoint/delete",
-              "api-reference/endpoint/webhook"
+              "advanced/performance",
+              "advanced/storage-engine",
+              "advanced/indexing",
+              "advanced/security",
+              "advanced/migrations"
             ]
           }
         ]
       }
-    ],
-    "global": {
-      "anchors": [
-        {
-          "anchor": "Documentation",
-          "href": "https://mintlify.com/docs",
-          "icon": "book-open-cover"
-        },
-        {
-          "anchor": "Blog",
-          "href": "https://mintlify.com/blog",
-          "icon": "newspaper"
-        }
-      ]
-    }
-  },
-  "logo": {
-    "light": "/logo/light.svg",
-    "dark": "/logo/dark.svg"
-  },
-  "navbar": {
-    "links": [
-      {
-        "label": "Support",
-        "href": "mailto:hi@mintlify.com"
-      }
-    ],
-    "primary": {
-      "type": "button",
-      "label": "Dashboard",
-      "href": "https://dashboard.mintlify.com"
-    }
-  },
-  "contextual": {
-    "options": [
-     "copy",
-     "view",
-     "chatgpt",
-     "claude",
-     "perplexity",
-     "mcp",
-     "cursor",
-     "vscode"
-   ]
-  },
-  "footer": {
-    "socials": {
-      "x": "https://x.com/mintlify",
-      "github": "https://github.com/mintlify",
-      "linkedin": "https://linkedin.com/company/mintlify"
-    }
+    ]
   }
 }

@@ -1,0 +1,656 @@
+---
+title: Local Deployment Guide
+description: Deploy HelixDB locally with Docker for development and testing
+---
+
+## Overview
+
+HelixDB can be deployed locally using the Helix CLI, which manages Docker containers for you. This guide covers local installation, project initialization, building instances, and connecting to your local database.
+
+## Prerequisites
+
+- **Docker** or **Podman** installed and running
+- **Unix-like system** (Linux, macOS, or WSL2 on Windows)
+- **Rust toolchain** (optional, for building from source)
+
+## Installation
+
+<Steps>
+
+### Install the Helix CLI
+
+Use the installation script to get the latest CLI:
+
+```bash
+curl -sSL "https://install.helix-db.com" | bash
+```
+
+The CLI will be installed to `~/.helix/bin` and added to your PATH.
+
+### Verify installation
+
+```bash
+helix --version
+```
+
+You should see the current version number.
+
+### Check Docker availability
+
+The CLI will automatically detect Docker or Podman:
+
+```bash
+docker --version
+# or
+podman --version
+```
+
+</Steps>
+
+## Project Initialization
+
+### Create a new project
+
+```bash
+mkdir my-helix-project
+cd my-helix-project
+helix init
+```
+
+This creates:
+- `helix.toml` - Project configuration
+- `queries/` - Directory for HelixQL files
+- `.helix/` - Local workspace for instances
+
+### Interactive initialization
+
+The CLI will prompt you for:
+
+- **Project name** - Defaults to directory name
+- **Deployment type** - Choose "Local" for development
+- **Port** - Default is 6969
+- **Instance name** - Default is "dev"
+
+### Project structure
+
+After initialization:
+
+```
+my-helix-project/
+├── helix.toml           # Configuration
+├── queries/
+│   └── schema.hx        # Your HelixQL files
+└── .helix/
+    └── instances/
+        └── dev/         # Instance workspace
+```
+
+## Configuration
+
+### helix.toml structure
+
+The configuration file defines your project and instances:
+
+```toml
+[project]
+name = "my-helix-project"
+queries = "queries"  # Path to .hx files
+
+[local.dev]
+port = 6969
+volume = ".helix/data/dev"  # Data persistence location
+
+[local.dev.db_config]
+max_size_gb = 10           # Maximum database size
+max_readers = 126          # Concurrent read transactions
+max_dbs = 12               # Maximum number of databases
+```
+
+### Environment variables
+
+Configure embedding providers and other settings:
+
+```toml
+[local.dev.env_vars]
+OPENAI_API_KEY = "sk-..."
+EMBEDDING_MODEL = "openai:text-embedding-3-small"
+LOG_LEVEL = "info"
+```
+
+### Multiple instances
+
+Define separate instances for different environments:
+
+```toml
+[local.dev]
+port = 6969
+volume = ".helix/data/dev"
+
+[local.staging]
+port = 6970
+volume = ".helix/data/staging"
+
+[local.prod]
+port = 6971
+volume = ".helix/data/prod"
+```
+
+## Writing Queries
+
+### Define your schema
+
+Create `queries/schema.hx`:
+
+```haskell
+// Define node types
+N::User {
+    INDEX name: String,
+    email: String,
+    age: U32,
+    created_at: I64
+}
+
+N::Post {
+    INDEX title: String,
+    content: String,
+    V::embedding: Vec<F64>,
+    published_at: I64
+}
+
+// Define edge types
+E::authored {
+    timestamp: I64
+}
+
+E::likes {
+    timestamp: I64
+}
+```
+
+### Write queries
+
+Create `queries/users.hx`:
+
+```haskell
+// Create a new user
+QUERY createUser(name: String, email: String, age: U32) =>
+    user <- ADD N<User> {
+        name: name,
+        email: email,
+        age: age,
+        created_at: timestamp()
+    }
+    RETURN user
+
+// Get user by name
+QUERY getUser(userName: String) =>
+    user <- N<User>({ name: userName })
+    RETURN user
+
+// Get user's posts
+QUERY getUserPosts(userName: String) =>
+    user <- N<User>({ name: userName })
+    posts <- user -[authored]-> N<Post>()
+    RETURN posts
+
+// Semantic search on posts
+QUERY searchPosts(query: String, k: U32) =>
+    embedding <- Embed(query)
+    posts <- SEARCH V<Post::embedding>(embedding, k)
+    RETURN posts
+```
+
+### Validate queries
+
+Check that your queries compile:
+
+```bash
+helix check
+```
+
+This validates syntax and type safety without building.
+
+## Building and Starting
+
+<Steps>
+
+### Build the instance
+
+Compile your queries and create a Docker image:
+
+```bash
+helix build dev
+```
+
+This process:
+1. Syncs the HelixDB repository
+2. Compiles your HelixQL queries to Rust
+3. Builds a Docker image with embedded queries
+4. Creates a docker-compose.yml in `.helix/instances/dev/`
+
+### Start the database
+
+```bash
+helix start dev
+```
+
+The database starts on the configured port (default: 6969).
+
+### Check status
+
+```bash
+helix status dev
+```
+
+Output:
+```
+Instance: dev
+Status: running
+Port: 6969
+Container: helix_my-helix-project_dev
+Volume: /path/to/.helix/data/dev
+Uptime: 2h 15m
+```
+
+</Steps>
+
+## Connecting to the Database
+
+### Using the TypeScript SDK
+
+Install the SDK:
+
+```bash
+npm install helix-ts
+```
+
+Connect and query:
+
+```typescript
+import HelixDB from "helix-ts";
+
+// Create client
+const client = new HelixDB({
+  host: "localhost",
+  port: 6969,
+});
+
+// Execute queries
+const user = await client.query("createUser", {
+  name: "Alice",
+  email: "alice@example.com",
+  age: 30,
+});
+
+console.log("Created user:", user);
+
+// Semantic search
+const posts = await client.query("searchPosts", {
+  query: "machine learning tutorials",
+  k: 10,
+});
+
+console.log("Found posts:", posts);
+```
+
+### Using the Python SDK
+
+Install the SDK:
+
+```bash
+pip install helix-py
+```
+
+Connect and query:
+
+```python
+from helix_py import HelixDB
+
+# Create client
+client = HelixDB(host="localhost", port=6969)
+
+# Execute queries
+user = client.query("createUser", {
+    "name": "Bob",
+    "email": "bob@example.com",
+    "age": 25
+})
+
+print(f"Created user: {user}")
+
+# Semantic search
+posts = client.query("searchPosts", {
+    "query": "database design patterns",
+    "k": 10
+})
+
+print(f"Found {len(posts)} posts")
+```
+
+### Using HTTP directly
+
+Make POST requests to execute queries:
+
+```bash
+curl -X POST http://localhost:6969/query/createUser \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "Charlie",
+    "email": "charlie@example.com",
+    "age": 28
+  }'
+```
+
+Response:
+```json
+{
+  "id": "01234567-89ab-cdef-0123-456789abcdef",
+  "name": "Charlie",
+  "email": "charlie@example.com",
+  "age": 28,
+  "created_at": 1709251200
+}
+```
+
+## Data Management
+
+### View logs
+
+Stream container logs:
+
+```bash
+helix logs dev
+```
+
+Follow logs in real-time:
+
+```bash
+helix logs dev --follow
+```
+
+### Backup data
+
+Create a backup of your database:
+
+```bash
+helix backup dev
+```
+
+Backups are stored in `.helix/backups/`:
+
+```
+.helix/backups/
+└── dev_2024-02-28_15-30-00.tar.gz
+```
+
+### Restore from backup
+
+```bash
+helix restore dev --from .helix/backups/dev_2024-02-28_15-30-00.tar.gz
+```
+
+### Clear data
+
+Delete all data (keep configuration):
+
+```bash
+helix prune dev
+```
+
+This removes the data volume while preserving the instance configuration.
+
+## Development Workflow
+
+### Iterative development
+
+The typical development cycle:
+
+```bash
+# 1. Edit queries
+vim queries/users.hx
+
+# 2. Check for errors
+helix check
+
+# 3. Rebuild instance
+helix build dev
+
+# 4. Restart database
+helix restart dev
+
+# 5. Test changes
+curl -X POST http://localhost:6969/query/getUserPosts \
+  -H "Content-Type: application/json" \
+  -d '{"userName": "Alice"}'
+```
+
+### Hot reload
+
+For faster iteration, use `helix push` instead of full rebuild:
+
+```bash
+# Compile and push without rebuilding container
+helix push dev
+
+# The container automatically reloads new queries
+```
+
+Note: This only works for query changes, not schema changes.
+
+### Testing with multiple instances
+
+Run separate instances for testing:
+
+```bash
+# Start dev instance
+helix start dev
+
+# Start test instance on different port
+helix start test
+
+# Run integration tests against test instance
+npm test -- --port 6970
+
+# Stop test instance
+helix stop test
+```
+
+## Performance Tuning
+
+### Database configuration
+
+Optimize for your workload in `helix.toml`:
+
+```toml
+[local.dev.db_config]
+# Increase for large datasets
+max_size_gb = 50
+
+# Increase for high read concurrency
+max_readers = 256
+
+# Increase if you have many collections
+max_dbs = 24
+```
+
+### Container resources
+
+Limit Docker resource usage:
+
+```bash
+# Edit docker-compose.yml in .helix/instances/dev/
+vim .helix/instances/dev/docker-compose.yml
+```
+
+Add resource limits:
+
+```yaml
+services:
+  helix-db:
+    # ... existing config ...
+    deploy:
+      resources:
+        limits:
+          cpus: '4.0'
+          memory: 8G
+        reservations:
+          cpus: '2.0'
+          memory: 4G
+```
+
+Restart the instance:
+
+```bash
+helix restart dev
+```
+
+### Monitor performance
+
+View database metrics:
+
+```bash
+helix metrics dev
+```
+
+Output:
+```
+Requests/sec: 1,234
+Avg latency: 2.3ms
+P95 latency: 5.1ms
+P99 latency: 12.4ms
+Memory usage: 2.3GB / 8GB
+Disk usage: 1.2GB / 50GB
+```
+
+## Troubleshooting
+
+### Instance won't start
+
+Check Docker is running:
+
+```bash
+docker ps
+```
+
+Check port availability:
+
+```bash
+lsof -i :6969
+```
+
+View error logs:
+
+```bash
+helix logs dev --tail 100
+```
+
+### Queries fail to compile
+
+Run detailed check:
+
+```bash
+helix check --verbose
+```
+
+Common issues:
+- Type mismatches in query parameters
+- Undefined node or edge types
+- Invalid HelixQL syntax
+
+### Connection refused
+
+Verify the instance is running:
+
+```bash
+helix status dev
+```
+
+Check container networking:
+
+```bash
+docker logs helix_my-helix-project_dev
+```
+
+Test direct connection:
+
+```bash
+curl http://localhost:6969/health
+```
+
+### Out of disk space
+
+Check data volume size:
+
+```bash
+du -sh .helix/data/dev
+```
+
+Increase max_size_gb in configuration or prune old data.
+
+## Advanced Topics
+
+### Custom Docker image
+
+Build from a specific commit:
+
+```bash
+helix build dev --bin feature-branch
+```
+
+### Network configuration
+
+Connect multiple containers:
+
+```yaml
+# docker-compose.yml
+networks:
+  helix_network:
+    driver: bridge
+
+services:
+  helix-db:
+    networks:
+      - helix_network
+  
+  app:
+    networks:
+      - helix_network
+    depends_on:
+      - helix-db
+```
+
+### Environment-specific configuration
+
+Use different config files:
+
+```bash
+# Development
+helix --config helix.dev.toml start dev
+
+# Staging
+helix --config helix.staging.toml start staging
+```
+
+## Migration from Development to Production
+
+When ready to deploy to production:
+
+1. **Export schema and queries**:
+   ```bash
+   tar -czf queries.tar.gz queries/
+   ```
+
+2. **Backup development data**:
+   ```bash
+   helix backup dev
+   ```
+
+3. **Deploy to cloud** (see [Cloud Deployment](/guides/cloud-deployment))
+
+4. **Migrate data** using the backup restore process
+
+## Next Steps
+
+- Learn about [Cloud Deployment](/guides/cloud-deployment) for production
+- Explore [RAG Applications](/guides/rag-applications) for AI use cases
+- Master [Graph Traversals](/guides/graph-traversals) for complex queries

@@ -1,0 +1,154 @@
+---
+title: 'HelixQL Overview'
+description: 'Introduction to HelixQL - the query language for HelixDB'
+---
+
+## What is HelixQL?
+
+HelixQL (HQL) is a declarative, type-safe query language designed specifically for HelixDB. It combines graph traversals, vector search, and traditional database operations into a unified syntax.
+
+### Key Features
+
+- **Graph-native**: Built-in support for nodes, edges, and graph traversals
+- **Vector operations**: First-class support for vector embeddings and semantic search
+- **Type-safe**: Strong typing with compile-time validation
+- **Declarative**: Express what you want, not how to get it
+- **Schema versioning**: Built-in migration support for evolving schemas
+
+## Language Concepts
+
+### Schema Definitions
+
+HelixQL uses three primary entity types:
+
+<ParamField path="N::" type="Node">
+  Node definitions represent entities in your graph
+</ParamField>
+
+<ParamField path="E::" type="Edge">
+  Edge definitions represent relationships between nodes
+</ParamField>
+
+<ParamField path="V::" type="Vector">
+  Vector definitions represent embeddings for semantic search
+</ParamField>
+
+### Queries
+
+Queries are named, parameterized functions that execute operations and return results:
+
+```hql
+QUERY GetUser(id: ID) =>
+    user <- N<User>(id)
+    RETURN user
+```
+
+### Traversals
+
+HelixQL supports powerful graph traversal operations:
+
+```hql
+QUERY GetFriends(userId: ID) =>
+    friends <- N<User>(userId)::Out<Knows>
+    RETURN friends
+```
+
+## Basic Example
+
+Here's a complete example showing schema, query, and traversal:
+
+<CodeGroup>
+
+```hql Schema
+N::User {
+    INDEX name: String,
+    age: I32,
+    created_at: Date DEFAULT NOW
+}
+
+E::Knows {
+    From: User,
+    To: User,
+    Properties: {
+        since: Date
+    }
+}
+```
+
+```hql Query
+QUERY CreateUser(name: String, age: I32) =>
+    user <- AddN<User>({name: name, age: age})
+    RETURN user
+
+QUERY GetUserFriends(userId: ID) =>
+    user <- N<User>(userId)
+    friends <- user::Out<Knows>
+    RETURN friends
+```
+
+</CodeGroup>
+
+## Type System
+
+HelixQL supports a rich type system:
+
+<ParamField path="String" type="text">
+  UTF-8 encoded strings
+</ParamField>
+
+<ParamField path="I32, I64, I8, I16" type="integer">
+  Signed integers of various sizes
+</ParamField>
+
+<ParamField path="U32, U64, U8, U16, U128" type="unsigned">
+  Unsigned integers of various sizes
+</ParamField>
+
+<ParamField path="F32, F64" type="float">
+  Floating-point numbers
+</ParamField>
+
+<ParamField path="Boolean" type="bool">
+  True or false values
+</ParamField>
+
+<ParamField path="Date" type="datetime">
+  ISO 8601 datetime values
+</ParamField>
+
+<ParamField path="ID" type="identifier">
+  Unique identifiers for entities
+</ParamField>
+
+<ParamField path="[Type]" type="array">
+  Arrays of any type
+</ParamField>
+
+<ParamField path="{...}" type="object">
+  Nested object types
+</ParamField>
+
+## File Structure
+
+HelixQL projects typically use these file extensions:
+
+- `schema.hx` - Schema definitions
+- `queries.hx` - Query definitions
+- `*.hx` - General HQL files
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Schema Definitions" icon="sitemap" href="/hql/schema">
+    Learn how to define nodes, edges, and vectors
+  </Card>
+  <Card title="Writing Queries" icon="code" href="/hql/queries">
+    Master query syntax and operations
+  </Card>
+  <Card title="Graph Traversals" icon="diagram-project" href="/hql/traversals">
+    Explore graph navigation patterns
+  </Card>
+  <Card title="Vector Search" icon="magnifying-glass" href="/hql/vectors">
+    Work with embeddings and semantic search
+  </Card>
+</CardGroup>

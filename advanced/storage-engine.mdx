@@ -1,0 +1,609 @@
+---
+title: 'Storage Engine'
+description: 'LMDB storage architecture and implementation details in HelixDB'
+icon: 'hard-drive'
+---
+
+## Overview
+
+HelixDB uses LMDB (Lightning Memory-Mapped Database) as its storage engine, providing ACID transactions, excellent read performance, and zero-copy data access.
+
+## LMDB Architecture
+
+### Memory-Mapped Files
+
+LMDB uses memory-mapped files for data access:
+
+```rust
+let graph_env = unsafe {
+    EnvOpenOptions::new()
+        .map_size(db_size * 1024 * 1024 * 1024)  // Map entire DB into address space
+        .max_dbs(200)                             // Max number of databases
+        .max_readers(200)                         // Max concurrent readers
+        .open(Path::new(path))?
+};
+```
+
+<Info>
+  Environment setup: `/home/daytona/workspace/source/helix-db/src/helix_engine/storage_core/mod.rs:84-90`
+</Info>
+
+**Benefits**:
+- Zero-copy reads (data accessed directly from memory)
+- OS page cache automatically manages hot/cold data
+- No serialization overhead for reads
+- Excellent read performance
+
+**Considerations**:
+- Requires large virtual address space (use 64-bit systems)
+- Database size must be pre-allocated
+- Actual disk usage grows as data is written
+
+### Transaction Model
+
+<ParamField path="Read Transactions" type="MVCC">
+  **Characteristics**:
+  - Fully concurrent (hundreds to thousands simultaneous)
+  - Snapshot isolation (consistent view of data)
+  - Zero-overhead (no locks)
+  - Read-only, cannot modify data
+  
+  **Usage**:
+  ```rust
+  let rtxn = env.read_txn()?;
+  let node = storage.get_node(&rtxn, node_id)?;
+  // rtxn automatically commits on drop
+  ```
+</ParamField>
+
+<ParamField path="Write Transactions" type="Serialized">
+  **Characteristics**:
+  - Serialized (one at a time)
+  - ACID guarantees
+  - Atomic commits
+  - Write locks prevent concurrent writes
+  
+  **Usage**:
+  ```rust
+  let mut wtxn = env.write_txn()?;
+  storage.add_node(&mut wtxn, node)?;
+  storage.add_edge(&mut wtxn, edge)?;
+  wtxn.commit()?;  // Atomic commit of all changes
+  ```
+</ParamField>
+
+<Warning>
+  Write transactions are serialized. For high write throughput, batch operations within transactions.
+</Warning>
+
+## Database Structure
+
+HelixDB creates multiple named databases (tables) within LMDB:
+
+### Core Databases
+
+<ParamField path="nodes" type="Database<U128<BE>, Bytes>">
+  **Purpose**: Store node data
+  
+  **Key**: 128-bit UUID (big-endian)
+  
+  **Value**: Bincode-serialized node:
+  ```rust
+  struct Node {
+      id: u128,
+      label: &str,
+      version: u16,
+      properties: Option<PropertiesMap>,
+  }
+  ```
+  
+  **Size**: 16 bytes (key) + variable (value)
+</ParamField>
+
+<Info>
+  Node database: `/home/daytona/workspace/source/helix-db/src/helix_engine/storage_core/mod.rs:98-104`
+</Info>
+
+<ParamField path="edges" type="Database<U128<BE>, Bytes>">
+  **Purpose**: Store edge data
+  
+  **Key**: 128-bit UUID (big-endian)
+  
+  **Value**: Bincode-serialized edge:
+  ```rust
+  struct Edge {
+      id: u128,
+      label: &str,
+      version: u16,
+      from_node: u128,
+      to_node: u128,
+      properties: Option<PropertiesMap>,
+  }
+  ```
+  
+  **Size**: 16 bytes (key) + variable (value)
+</ParamField>
+
+<Info>
+  Edge database: `/home/daytona/workspace/source/helix-db/src/helix_engine/storage_core/mod.rs:106-112`
+</Info>
+
+### Graph Index Databases
+
+<ParamField path="out_edges" type="Database<Bytes, Bytes>">
+  **Purpose**: Index for outgoing edge traversal
+  
+  **Key**: `from_node_id (16 bytes) + label_hash (4 bytes)` = 20 bytes
+  
+  **Value**: `edge_id (16 bytes) + to_node_id (16 bytes)` = 32 bytes
+  
+  **Flags**: `DUP_SORT | DUP_FIXED`
+  - `DUP_SORT`: Allow duplicate keys, store values sorted
+  - `DUP_FIXED`: All values same size (32 bytes), optimized storage
+  
+  **Enables**: Efficient `OutE<Type>` traversals
+</ParamField>
+
+<Info>
+  Outgoing edges index: `/home/daytona/workspace/source/helix-db/src/helix_engine/storage_core/mod.rs:114-124`
+</Info>
+
+<ParamField path="in_edges" type="Database<Bytes, Bytes>">
+  **Purpose**: Index for incoming edge traversal
+  
+  **Key**: `to_node_id (16 bytes) + label_hash (4 bytes)` = 20 bytes
+  
+  **Value**: `edge_id (16 bytes) + from_node_id (16 bytes)` = 32 bytes
+  
+  **Flags**: `DUP_SORT | DUP_FIXED`
+  
+  **Enables**: Efficient `InE<Type>` traversals
+</ParamField>
+
+<Info>
+  Incoming edges index: `/home/daytona/workspace/source/helix-db/src/helix_engine/storage_core/mod.rs:126-136`
+</Info>
+
+### Why Duplicate Keys?
+
+The `DUP_SORT` flag enables efficient multi-value lookups:
+
+```
+Key: [node_id + label_hash]
+Values:
+  - [edge1_id + target1_id]
+  - [edge2_id + target2_id]
+  - [edge3_id + target3_id]
+  ...
+```
+
+**Benefits**:
+- Single database lookup returns all edges
+- Values stored contiguously on disk
+- No 8-byte length header per value (DUP_FIXED)
+- Efficient memory layout
+
+**Example query**:
+```rust
+// Get all outgoing FOLLOWS edges from user
+let key = [user_id + hash("FOLLOWS")];
+let edges = out_edges_db.get_duplicates(txn, &key)?;  // Single lookup
+```
+
+### Secondary Index Databases
+
+Created dynamically based on schema:
+
+<ParamField path="INDEX fields" type="Database<Bytes, U128<BE>>">
+  **Purpose**: Non-unique secondary index
+  
+  **Key**: Serialized field value
+  
+  **Value**: Node ID (128-bit UUID)
+  
+  **Flags**: `DUP_SORT` (allows duplicates)
+  
+  **Example**:
+  ```hql
+  N::User {
+    INDEX role: String  // Creates "role" database
+  }
+  ```
+  
+  **Storage**:
+  ```
+  Key: "admin" -> [uuid1, uuid2, uuid3, ...]
+  Key: "user" -> [uuid4, uuid5, uuid6, ...]
+  ```
+</ParamField>
+
+<ParamField path="UNIQUE INDEX fields" type="Database<Bytes, U128<BE>>">
+  **Purpose**: Unique secondary index
+  
+  **Key**: Serialized field value
+  
+  **Value**: Node ID (128-bit UUID)
+  
+  **Flags**: None (no duplicates allowed)
+  
+  **Example**:
+  ```hql
+  N::User {
+    UNIQUE INDEX email: String  // Creates "email" database
+  }
+  ```
+  
+  **Storage**:
+  ```
+  Key: "user@example.com" -> uuid1
+  Key: "admin@example.com" -> uuid2
+  ```
+</ParamField>
+
+<Info>
+  Secondary index creation: `/home/daytona/workspace/source/helix-db/src/helix_engine/storage_core/mod.rs:144-176`
+</Info>
+
+### Vector Databases
+
+Created per vector type:
+
+<ParamField path="vectors_{type}" type="Database<Bytes, Bytes>">
+  **Purpose**: Store vector embeddings and metadata
+  
+  **Key**: 128-bit UUID + layer info
+  
+  **Value**: Vector data (embedding + properties)
+</ParamField>
+
+<ParamField path="vector_layers_{type}" type="Database<Bytes, Bytes>">
+  **Purpose**: Store HNSW graph structure
+  
+  **Key**: Vector ID + layer
+  
+  **Value**: Neighbor list (node IDs and distances)
+</ParamField>
+
+<ParamField path="vector_metadata_{type}" type="Database<Bytes, Bytes>">
+  **Purpose**: Store HNSW metadata
+  
+  **Key**: Metadata key (e.g., "entry_point")
+  
+  **Value**: Metadata value
+</ParamField>
+
+### BM25 Databases
+
+Created when BM25 indexing is enabled:
+
+<ParamField path="bm25_inverted_index" type="Database<Bytes, Bytes>">
+  **Purpose**: Term -> document postings list
+  
+  **Key**: Term (string)
+  
+  **Value**: Posting list entries:
+  ```rust
+  struct PostingListEntry {
+      doc_id: u128,
+      term_frequency: u32,
+  }
+  ```
+  
+  **Flags**: `DUP_SORT` (multiple docs per term)
+</ParamField>
+
+<ParamField path="bm25_doc_lengths" type="Database<U128<BE>, U32<BE>>">
+  **Purpose**: Store document lengths for BM25 scoring
+  
+  **Key**: Document ID
+  
+  **Value**: Document length (token count)
+</ParamField>
+
+<ParamField path="bm25_term_frequencies" type="Database<Bytes, U32<BE>>">
+  **Purpose**: Store document frequency per term
+  
+  **Key**: Term
+  
+  **Value**: Number of documents containing term
+</ParamField>
+
+<ParamField path="bm25_metadata" type="Database<Bytes, Bytes>">
+  **Purpose**: Store BM25 global metadata
+  
+  **Key**: Metadata key
+  
+  **Value**: Metadata (total docs, avg doc length, k1, b)
+</ParamField>
+
+<Info>
+  BM25 database creation: `/home/daytona/workspace/source/helix-db/src/helix_engine/bm25/bm25.rs:80-115`
+</Info>
+
+## Storage Layout on Disk
+
+### File Structure
+
+```
+db_path/
+├── data.mdb          # Main data file (memory-mapped)
+└── lock.mdb          # Lock file for process coordination
+```
+
+**data.mdb**:
+- B+tree structure
+- Page size: 4 KB (typical)
+- Contains all databases (tables)
+- Grows as data is added
+- Maximum size set by `map_size`
+
+**lock.mdb**:
+- Coordinates readers/writers
+- Small file (~8 KB)
+- Required for MVCC
+
+### Page Structure
+
+LMDB uses B+tree pages:
+
+```
+Page (4 KB):
+  - Page header (metadata)
+  - Key-value entries
+  - Free space
+```
+
+**Page types**:
+- **Branch pages**: Internal nodes with pointers to child pages
+- **Leaf pages**: Data pages with actual key-value pairs
+- **Overflow pages**: For values larger than page size
+
+### Write Amplification
+
+LMDB uses copy-on-write (COW) for transactions:
+
+1. Modified pages are copied
+2. Updates applied to copies
+3. On commit, page table updated atomically
+4. Old pages become free space
+
+**Implications**:
+- Writes are not in-place
+- Database file can have unused pages
+- Periodic compaction may be needed for heavy write workloads
+
+## Data Serialization
+
+### Bincode Format
+
+HelixDB uses Bincode for serialization:
+
+```rust
+let options = bincode::DefaultOptions::new()
+    .with_fixint_encoding()      // Fixed-size integers
+    .with_little_endian();       // Little-endian byte order
+
+let bytes = options.serialize(&node)?;
+```
+
+**Characteristics**:
+- Compact binary format
+- Fast serialization/deserialization
+- No schema overhead
+- Fixed-size integers for efficiency
+
+### Endianness Handling
+
+HelixDB handles endianness for cross-platform compatibility:
+
+<Info>
+  Endianness migration: `/home/daytona/workspace/source/helix-db/src/helix_engine/storage_core/storage_migration.rs:45-70`
+</Info>
+
+**Vector data** is stored in native endianness:
+- On little-endian systems: little-endian
+- On big-endian systems: big-endian
+- Migration handled automatically on platform change
+
+**Node/Edge IDs** use big-endian (`U128<BE>`) for consistent ordering across platforms.
+
+## Storage Metadata
+
+<ParamField path="storage_metadata" type="Database<Bytes, Bytes>">
+  **Purpose**: Store storage-level configuration and state
+  
+  **Contents**:
+  - Vector endianness
+  - Schema version
+  - Storage version
+  
+  **Example**:
+  ```rust
+  enum StorageMetadata {
+      VectorNativeEndianness {
+          vector_endianness: VectorEndianness,
+      },
+  }
+  ```
+</ParamField>
+
+<Info>
+  Metadata database: `/home/daytona/workspace/source/helix-db/src/helix_engine/storage_core/mod.rs:138-142`
+</Info>
+
+## Compaction and Maintenance
+
+### Database Growth
+
+LMDB databases grow but don't shrink automatically:
+
+```
+Initial: 10 GB allocated, 2 GB used
+After writes: 10 GB allocated, 8 GB used
+After deletes: 10 GB allocated, 4 GB used (free space internal)
+```
+
+### Compaction
+
+To reclaim space, copy to new database:
+
+```rust
+// Create new environment
+let new_env = create_new_env("new_db_path")?;
+
+// Copy all data
+copy_database(&old_env, &new_env)?;
+
+// Replace old with new
+std::fs::rename("new_db_path", "db_path")?;
+```
+
+<Note>
+  Compaction is an offline operation. Plan maintenance windows for large databases.
+</Note>
+
+## Backup and Recovery
+
+### Hot Backup
+
+LMDB supports hot backups via `env.copy()`:
+
+```rust
+let rtxn = env.read_txn()?;
+env.copy_to_path("backup_path", heed3::CompactionOption::Enabled)?;
+// Database continues to operate during backup
+```
+
+**Features**:
+- Consistent snapshot
+- No downtime
+- Optional compaction during copy
+
+### Point-in-Time Recovery
+
+LMDB is crash-safe:
+- All transactions are atomic
+- Committed data is durable
+- Incomplete transactions are rolled back on restart
+
+**Recovery steps**:
+1. Restart application
+2. LMDB automatically recovers consistent state
+3. No manual intervention needed
+
+## Performance Characteristics
+
+### Read Performance
+
+<ParamField path="Sequential reads" performance="Excellent">
+  - 100K+ reads/sec per core
+  - Zero-copy access
+  - Limited by memory bandwidth
+</ParamField>
+
+<ParamField path="Random reads" performance="Good">
+  - 10K-100K reads/sec per core
+  - Dependent on data in page cache
+  - SSD vs HDD makes huge difference
+</ParamField>
+
+<ParamField path="Concurrent reads" performance="Excellent">
+  - Scales linearly with cores
+  - No read locks
+  - MVCC snapshot isolation
+</ParamField>
+
+### Write Performance
+
+<ParamField path="Sequential writes" performance="Good">
+  - 10K-50K writes/sec
+  - Serialized (one transaction at a time)
+  - Batching improves throughput
+</ParamField>
+
+<ParamField path="Random writes" performance="Moderate">
+  - 1K-10K writes/sec
+  - Copy-on-write overhead
+  - Page splits for B+tree maintenance
+</ParamField>
+
+<ParamField path="Concurrent writes" performance="Limited">
+  - One write transaction at a time
+  - Readers not blocked
+  - Batch operations within transactions for throughput
+</ParamField>
+
+## Limitations
+
+<Warning>
+  **Maximum database size**: ~10 TB (9,998 GB)
+  
+  **Maximum key size**: 511 bytes
+  
+  **Maximum value size**: Limited by `map_size`, typically use < 1 MB per value
+  
+  **Write concurrency**: Serialized (one write transaction at a time)
+  
+  **Virtual address space**: Requires 64-bit system for large databases
+</Warning>
+
+## Best Practices
+
+<AccordionGroup>
+  <Accordion title="Set appropriate map_size">
+    Over-allocate map_size (doesn't use actual disk space):
+    ```rust
+    // Good: 3-5x expected data size
+    map_size: 500 * 1024 * 1024 * 1024  // 500 GB for 100-150 GB data
+    ```
+  </Accordion>
+  
+  <Accordion title="Batch write operations">
+    Group multiple writes in single transaction:
+    ```rust
+    let mut wtxn = env.write_txn()?;
+    for node in nodes {
+        storage.add_node(&mut wtxn, node)?;
+    }
+    wtxn.commit()?;  // Single commit for all
+    ```
+  </Accordion>
+  
+  <Accordion title="Use SSD storage">
+    SSDs dramatically improve:
+    - Random read performance
+    - Graph traversal speed
+    - Vector search latency
+  </Accordion>
+  
+  <Accordion title="Monitor disk space">
+    Database files don't shrink. Monitor:
+    - Allocated size vs used size
+    - Free space ratio
+    - Plan compaction if needed
+  </Accordion>
+  
+  <Accordion title="Plan for growth">
+    Size `map_size` for future growth:
+    - Changing map_size requires downtime
+    - Over-allocation is free (virtual address space)
+    - Monitor usage and adjust before hitting limit
+  </Accordion>
+</AccordionGroup>
+
+## Related
+
+<CardGroup cols={2}>
+  <Card title="Performance" icon="gauge-high" href="/advanced/performance">
+    Optimize storage and query performance
+  </Card>
+  <Card title="Indexing" icon="magnifying-glass" href="/advanced/indexing">
+    Secondary index configuration
+  </Card>
+  <Card title="Migrations" icon="arrows-rotate" href="/advanced/migrations">
+    Schema evolution and data migrations
+  </Card>
+  <Card title="Node Definitions" icon="circle-nodes" href="/api/node-definitions">
+    How nodes are stored
+  </Card>
+</CardGroup>

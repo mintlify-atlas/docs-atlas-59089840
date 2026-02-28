@@ -1,0 +1,177 @@
+---
+title: "HelixDB"
+description: "The graph-vector database built for AI applications"
+---
+
+<div className="flex flex-col items-start gap-6 not-prose">
+  <div className="flex flex-col gap-2">
+    <h1 className="text-4xl font-bold tracking-tight text-slate-900 dark:text-slate-100">
+      The Database for AI Applications
+    </h1>
+    <p className="text-xl text-slate-600 dark:text-slate-400">
+      HelixDB is an open-source graph-vector database built from scratch in Rust. Build all the components needed for an AI application in a single platform.
+    </p>
+  </div>
+  
+  <div className="flex gap-3">
+    <a href="/quickstart" className="inline-flex items-center justify-center px-4 py-2 text-sm font-semibold text-white bg-orange-600 rounded-lg hover:bg-orange-700 transition-colors">
+      Get Started
+    </a>
+    <a href="https://github.com/HelixDB/helix-db" className="inline-flex items-center justify-center px-4 py-2 text-sm font-semibold text-slate-700 dark:text-slate-300 bg-slate-100 dark:bg-slate-800 rounded-lg hover:bg-slate-200 dark:hover:bg-slate-700 transition-colors">
+      View on GitHub
+    </a>
+  </div>
+</div>
+
+---
+
+## Why HelixDB?
+
+You no longer need a separate application DB, vector DB, graph DB, or application layers to manage multiple storage locations. Just use Helix.
+
+HelixDB primarily operates with a **graph + vector data model**, but it can also support key-value, documents, and relational data.
+
+<CardGroup cols={3}>
+  <Card title="Built-in MCP Tools" icon="robot">
+    Helix has built-in MCP support to allow your agents to discover data and walk the graph rather than generating human-readable queries.
+  </Card>
+  <Card title="Built-in Embeddings" icon="vector-square">
+    No need to embed your data before sending it to Helix. Just use the `Embed` function to vectorize text automatically.
+  </Card>
+  <Card title="Tooling for RAG" icon="magnifying-glass">
+    Built-in vector search, keyword search, and graph traversals that power any type of RAG applications.
+  </Card>
+  <Card title="Secure by Default" icon="shield-halved">
+    Private by default. You can only access your data through your compiled HelixQL queries.
+  </Card>
+  <Card title="Ultra-Low Latency" icon="bolt">
+    Built in Rust and uses LMDB as its storage engine to provide extremely low latencies.
+  </Card>
+  <Card title="Type-Safe Queries" icon="check-double">
+    HelixQL is 100% type-safe, letting you develop and deploy with confidence that your queries will execute in production.
+  </Card>
+</CardGroup>
+
+---
+
+## Unified Data Model
+
+HelixDB combines graph, vector, and document capabilities in a single query language. Define your schema, write type-safe queries, and deploy instantly.
+
+<CodeGroup>
+```hql Schema Definition
+N::User {
+    INDEX name: String,
+    age: U32
+}
+
+N::Document {
+    content: String
+}
+
+V::Embedding {
+    text: String
+}
+
+E::Owns {
+    From: User,
+    To: Document,
+    Properties: {
+        created_at: I64
+    }
+}
+```
+
+```hql Query Example
+QUERY getUserDocuments(user_name: String) =>
+    user <- N<User>({name: user_name})
+    docs <- user::Out<Owns>
+    RETURN docs
+```
+
+```hql Vector Search
+QUERY semanticSearch(query_text: String, limit: U32) =>
+    query_vec <- Embed(query_text)
+    results <- V<Embedding>::Search(query_vec, limit)
+    RETURN results
+```
+</CodeGroup>
+
+<Tip>
+  HelixQL queries are compiled to type-safe Rust code, ensuring runtime safety and optimal performance.
+</Tip>
+
+---
+
+## Developer Experience
+
+HelixDB is designed for developers who want to move fast without sacrificing safety or performance.
+
+<Steps>
+  <Step title="Install the CLI">
+    Get started with a single command:
+    ```bash
+    curl -sSL "https://install.helix-db.com" | bash
+    ```
+  </Step>
+  
+  <Step title="Initialize your project">
+    Create a new project with schema and query templates:
+    ```bash
+    helix init
+    ```
+  </Step>
+  
+  <Step title="Write queries">
+    Define your schema and queries in `.hx` files with full type safety.
+  </Step>
+  
+  <Step title="Deploy instantly">
+    Push your queries to a running instance:
+    ```bash
+    helix push dev
+    ```
+  </Step>
+</Steps>
+
+<Note>
+  Ready to build? Follow our [Quickstart Guide](/quickstart) to create your first working query in minutes.
+</Note>
+
+---
+
+## What You Can Build
+
+<CardGroup cols={2}>
+  <Card title="RAG Applications" icon="book-open" href="/guides/rag-applications">
+    Build retrieval-augmented generation systems with built-in vector search and graph context.
+  </Card>
+  <Card title="Knowledge Graphs" icon="diagram-project" href="/guides/graph-traversals">
+    Model complex relationships and traverse connected data efficiently.
+  </Card>
+  <Card title="AI Agent Systems" icon="brain" href="/guides/mcp-integration">
+    Enable agents to discover and navigate your data using Model Context Protocol.
+  </Card>
+  <Card title="Semantic Search" icon="magnifying-glass-chart" href="/guides/vector-search">
+    Implement powerful semantic search with automatic embeddings.
+  </Card>
+</CardGroup>
+
+---
+
+## Community and Support
+
+<CardGroup cols={2}>
+  <Card title="GitHub Repository" icon="github" href="https://github.com/HelixDB/helix-db">
+    Star the repo, contribute, and report issues
+  </Card>
+  <Card title="Discord Community" icon="discord" href="https://discord.gg/2stgMPr5BD">
+    Join our community for help and discussions
+  </Card>
+  <Card title="TypeScript SDK" icon="js" href="/sdks/typescript">
+    Official TypeScript client for Node.js applications
+  </Card>
+  <Card title="Python SDK" icon="python" href="/sdks/python">
+    Official Python client for Python applications
+  </Card>
+</CardGroup>

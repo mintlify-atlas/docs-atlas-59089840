@@ -1,0 +1,513 @@
+---
+title: Vector Search with HNSW
+description: Perform high-performance approximate nearest neighbor search using HelixDB's HNSW index
+---
+
+## Overview
+
+HelixDB uses Hierarchical Navigable Small World (HNSW) graphs for fast approximate nearest neighbor (ANN) search. This implementation provides sub-linear search time while maintaining high recall rates, making it ideal for large-scale vector databases.
+
+## HNSW Architecture
+
+HNSW creates a multi-layer graph structure:
+
+- **Layer 0** contains all vectors with connections to nearest neighbors
+- **Upper layers** contain subsets of vectors for faster navigation
+- **Greedy search** traverses from top layer to bottom
+- **Local search** refines results at the base layer
+
+This hierarchical structure enables O(log n) search complexity.
+
+## Basic Vector Search
+
+<Steps>
+
+### Insert vectors into the index
+
+```rust
+use helix_db::{HelixDB, G, HVector};
+use helix_db::helix_engine::traversal_core::ops::vectors::insert::InsertVAdapter;
+use std::sync::Arc;
+
+let db = Arc::new(HelixDB::new("./data", None).await?);
+let txn = db.write_txn()?;
+let arena = bumpalo::Bump::new();
+
+// Insert vectors with labels
+let vectors = vec![
+    vec![0.1, 0.2, 0.3, 0.4],
+    vec![0.2, 0.3, 0.4, 0.5],
+    vec![0.9, 0.8, 0.7, 0.6],
+];
+
+for (idx, vector_data) in vectors.iter().enumerate() {
+    let mut props = std::collections::HashMap::new();
+    props.insert("id", Value::I32(idx as i32));
+    let props_map = ImmutablePropertiesMap::from_hash_map(props, &arena)?;
+    
+    G::new(&db.storage, &txn, &arena)
+        .insert_v::<fn(&HVector, &RoTxn) -> bool>(
+            vector_data,
+            "embeddings",
+            Some(props_map),
+        )
+        .collect()?;
+}
+
+txn.commit()?;
+```
+
+### Perform vector search
+
+```rust
+use helix_db::helix_engine::traversal_core::ops::vectors::search::SearchVAdapter;
+
+let query_vector = vec![0.15, 0.25, 0.35, 0.45];
+
+let txn = db.read_txn()?;
+let arena = bumpalo::Bump::new();
+
+// Search for 10 nearest neighbors
+let results = G::new(&db.storage, &txn, &arena)
+    .search_v::<fn(&HVector, &RoTxn) -> bool, _>(
+        &query_vector,
+        10,  // k nearest neighbors
+        "embeddings",  // label to search within
+        None  // no filter function
+    )
+    .collect()?;
+
+for result in results {
+    if let TraversalValue::Vector(vec) = result {
+        println!(
+            "ID: {:?}, Distance: {:.4}",
+            vec.get_property("id"),
+            vec.get_distance()
+        );
+    }
+}
+```
+
+</Steps>
+
+## Advanced Search Options
+
+### Filtered search
+
+Apply filters during search to constrain results:
+
+```rust
+use heed3::RoTxn;
+
+// Define filter function
+let category_filter = |vector: &HVector, _txn: &RoTxn| -> bool {
+    vector.get_property("category")
+        .map(|v| v == &Value::String("technology".to_string()))
+        .unwrap_or(false)
+};
+
+let filters = [category_filter];
+
+// Perform filtered search
+let filtered_results = G::new(&db.storage, &txn, &arena)
+    .search_v::<_, _>(
+        &query_vector,
+        10,
+        "embeddings",
+        Some(&filters)  // Apply filter
+    )
+    .collect()?;
+```
+
+### Multiple filters
+
+Combine multiple filter conditions:
+
+```rust
+let timestamp_filter = |vector: &HVector, _txn: &RoTxn| -> bool {
+    if let Some(Value::I64(ts)) = vector.get_property("timestamp") {
+        let cutoff = chrono::Utc::now().timestamp() - (7 * 24 * 60 * 60);
+        *ts > cutoff  // Last 7 days
+    } else {
+        false
+    }
+};
+
+let quality_filter = |vector: &HVector, _txn: &RoTxn| -> bool {
+    if let Some(Value::F64(score)) = vector.get_property("quality_score") {
+        *score > 0.8  // High quality only
+    } else {
+        false
+    }
+};
+
+// All filters must pass
+let filters = [timestamp_filter, quality_filter];
+
+let results = G::new(&db.storage, &txn, &arena)
+    .search_v::<_, _>(
+        &query_vector,
+        10,
+        "embeddings",
+        Some(&filters)
+    )
+    .collect()?;
+```
+
+### Distance thresholds
+
+Filter results by similarity threshold:
+
+```rust
+let min_similarity = 0.7;  // Cosine similarity threshold
+
+let results = G::new(&db.storage, &txn, &arena)
+    .search_v::<fn(&HVector, &RoTxn) -> bool, _>(
+        &query_vector,
+        50,  // Get more candidates
+        "embeddings",
+        None
+    )
+    .collect()?;
+
+// Filter by distance (lower distance = higher similarity)
+let filtered: Vec<_> = results
+    .into_iter()
+    .filter(|r| {
+        if let TraversalValue::Vector(vec) = r {
+            vec.get_distance() > min_similarity
+        } else {
+            false
+        }
+    })
+    .take(10)  // Top 10 after filtering
+    .collect();
+```
+
+## Brute Force Search
+
+For exhaustive search on small datasets or within filtered subsets:
+
+```rust
+use helix_db::helix_engine::traversal_core::ops::vectors::brute_force_search::BruteForceSearchVAdapter;
+
+// Get all vectors of a type first
+let candidates = G::new(&db.storage, &txn, &arena)
+    .v_from_type("embeddings")
+    .filter(|v| {
+        v.get_property("category")
+            .map(|val| val == &Value::String("specific".to_string()))
+            .unwrap_or(false)
+    });
+
+// Brute force search within filtered candidates
+let results = candidates
+    .brute_force_search_v(&query_vector, 10)
+    .collect()?;
+```
+
+Brute force search is useful when:
+- The candidate set is small (less than 1000 vectors)
+- You need exact results
+- Filtering significantly reduces the search space
+
+## HNSW Parameters
+
+The HNSW implementation in HelixDB optimizes these parameters automatically, but understanding them helps:
+
+### Index construction parameters
+
+```rust
+// These are internal to the vector_core implementation
+// Located in: helix-engine/vector_core/hnsw.rs
+
+// M: Number of bi-directional links per node (default: 16)
+//    Higher M = better recall, more memory
+
+// ef_construction: Size of dynamic candidate list during construction
+//    Higher ef_construction = better index quality, slower build
+
+// ml: Level multiplier for layer assignment (default: 1/ln(M))
+```
+
+### Search parameters
+
+```rust
+// k: Number of nearest neighbors to return
+let k = 10;
+
+// label: Restricts search to vectors with this label
+let label = "embeddings";
+
+// should_trickle: Whether to propagate search through layers
+//   (automatically set by search_v adapter)
+let should_trickle = false;
+```
+
+## Performance Optimization
+
+### Batch searches
+
+Execute multiple searches in parallel:
+
+```rust
+use rayon::prelude::*;
+
+async fn batch_search(
+    db: Arc<HelixDB>,
+    queries: Vec<Vec<f64>>,
+    k: usize,
+) -> Result<Vec<Vec<TraversalValue>>> {
+    let results: Vec<_> = queries
+        .par_iter()
+        .map(|query| {
+            let txn = db.read_txn()?;
+            let arena = bumpalo::Bump::new();
+            
+            G::new(&db.storage, &txn, &arena)
+                .search_v::<fn(&HVector, &RoTxn) -> bool, _>(
+                    query,
+                    k,
+                    "embeddings",
+                    None
+                )
+                .collect()
+        })
+        .collect();
+    
+    results.into_iter().collect()
+}
+```
+
+### Transaction reuse
+
+Reuse read transactions for multiple searches:
+
+```rust
+let txn = db.read_txn()?;
+let arena = bumpalo::Bump::new();
+
+// Perform multiple searches with same transaction
+for query in queries {
+    let results = G::new(&db.storage, &txn, &arena)
+        .search_v::<fn(&HVector, &RoTxn) -> bool, _>(
+            &query,
+            10,
+            "embeddings",
+            None
+        )
+        .collect()?;
+    
+    // Process results...
+}
+
+// Transaction automatically dropped
+```
+
+### Memory management
+
+Optimize arena allocation for large batches:
+
+```rust
+use bumpalo::Bump;
+
+// Reuse arena for multiple operations
+let arena = Bump::with_capacity(1024 * 1024);  // 1MB
+
+for query in queries {
+    let results = G::new(&db.storage, &txn, &arena)
+        .search_v::<fn(&HVector, &RoTxn) -> bool, _>(
+            &query,
+            10,
+            "embeddings",
+            None
+        )
+        .collect()?;
+    
+    // Process results...
+    
+    // Clear arena for next iteration
+    arena.reset();
+}
+```
+
+## Multi-Label Search
+
+Search across multiple vector types:
+
+```rust
+let labels = vec!["documents", "images", "audio"];
+let mut all_results = Vec::new();
+
+for label in labels {
+    let results = G::new(&db.storage, &txn, &arena)
+        .search_v::<fn(&HVector, &RoTxn) -> bool, _>(
+            &query_vector,
+            10,
+            label,
+            None
+        )
+        .collect()?;
+    
+    all_results.extend(results);
+}
+
+// Sort combined results by distance
+all_results.sort_by(|a, b| {
+    let dist_a = if let TraversalValue::Vector(v) = a {
+        v.get_distance()
+    } else {
+        f64::MIN
+    };
+    let dist_b = if let TraversalValue::Vector(v) = b {
+        v.get_distance()
+    } else {
+        f64::MIN
+    };
+    dist_b.partial_cmp(&dist_a).unwrap()
+});
+
+let top_k: Vec<_> = all_results.into_iter().take(10).collect();
+```
+
+## Distance Metrics
+
+HelixDB uses cosine similarity internally (computed in `vector_core/vector_distance.rs`):
+
+```rust
+// Cosine similarity distance calculation (internal implementation)
+// Located in: helix-engine/vector_core/vector_distance.rs
+
+impl HVector {
+    pub fn distance_to(&self, other: &HVector) -> Result<f64> {
+        // Returns cosine similarity (0.0 to 1.0)
+        // Higher values = more similar
+        HVector::distance(self, other)
+    }
+}
+
+// Results are ranked by distance
+for result in results {
+    if let TraversalValue::Vector(vec) = result {
+        let similarity = vec.get_distance();
+        println!("Similarity: {:.4}", similarity);
+    }
+}
+```
+
+## Debugging and Monitoring
+
+### Inspect vector properties
+
+```rust
+for result in results {
+    if let TraversalValue::Vector(vec) = result {
+        println!("Vector ID: {}", uuid::Uuid::from_u128(vec.id()));
+        println!("Label: {}", vec.label());
+        println!("Distance: {:.4}", vec.get_distance());
+        println!("Dimensions: {}", vec.len());
+        println!("Level: {}", vec.level);
+        
+        if let Some(props) = &vec.properties {
+            println!("Properties:");
+            for (key, value) in props.iter() {
+                println!("  {}: {:?}", key, value);
+            }
+        }
+    }
+}
+```
+
+### Search performance metrics
+
+```rust
+use std::time::Instant;
+
+let start = Instant::now();
+
+let results = G::new(&db.storage, &txn, &arena)
+    .search_v::<fn(&HVector, &RoTxn) -> bool, _>(
+        &query_vector,
+        10,
+        "embeddings",
+        None
+    )
+    .collect()?;
+
+let duration = start.elapsed();
+println!("Search completed in {:?}", duration);
+println!("Found {} results", results.len());
+```
+
+## Integration with Graph Queries
+
+Combine vector search with graph traversals:
+
+```rust
+// Find similar vectors and traverse to related entities
+let related_entities = G::new(&db.storage, &txn, &arena)
+    .search_v::<fn(&HVector, &RoTxn) -> bool, _>(
+        &query_vector,
+        5,
+        "embeddings",
+        None
+    )
+    .out_node("belongs_to")  // Traverse to parent nodes
+    .dedup()
+    .collect()?;
+
+// Or filter vectors by graph relationships
+let vectors_with_relationship = G::new(&db.storage, &txn, &arena)
+    .n_from_type("entity")
+    .filter(|node| {
+        // Only entities with specific properties
+        node.get_property("verified")
+            .map(|v| v == &Value::Boolean(true))
+            .unwrap_or(false)
+    })
+    .in_vec("embedded_as", true)  // Get their embeddings
+    .brute_force_search_v(&query_vector, 10)  // Search within them
+    .collect()?;
+```
+
+## Error Handling
+
+```rust
+use helix_db::helix_engine::types::{GraphError, VectorError};
+
+fn safe_vector_search(
+    db: &HelixDB,
+    query: &[f64],
+    k: usize,
+    label: &str,
+) -> Result<Vec<TraversalValue>> {
+    let txn = db.read_txn()?;
+    let arena = bumpalo::Bump::new();
+    
+    match G::new(&db.storage, &txn, &arena)
+        .search_v::<fn(&HVector, &RoTxn) -> bool, _>(query, k, label, None)
+        .collect()
+    {
+        Ok(results) => Ok(results),
+        Err(GraphError::VectorError(msg)) if msg.contains("entry point") => {
+            // No vectors in index yet
+            eprintln!("No vectors found for label: {}", label);
+            Ok(Vec::new())
+        }
+        Err(GraphError::VectorError(msg)) if msg.contains("dimensions") => {
+            // Dimension mismatch
+            Err(GraphError::VectorError(format!(
+                "Query vector dimensions don't match indexed vectors: {}",
+                msg
+            )))
+        }
+        Err(e) => Err(e),
+    }
+}
+```
+
+## Next Steps
+
+- Build [RAG Applications](/guides/rag-applications) with semantic search
+- Configure [Built-in Embeddings](/guides/embeddings) for automatic vector generation
+- Explore [Graph Traversals](/guides/graph-traversals) to combine vector and graph queries

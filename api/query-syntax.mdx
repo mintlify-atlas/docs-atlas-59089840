@@ -1,0 +1,711 @@
+---
+title: 'Query Syntax'
+description: 'QUERY statement structure and traversal patterns in HelixQL'
+icon: 'code'
+---
+
+## Overview
+
+Queries in HelixQL are defined using the `QUERY` keyword and follow a functional, pipeline-based syntax for graph traversal and data manipulation.
+
+## Syntax
+
+```hql
+[#[macro]]
+QUERY <query_name>(<parameters>) =>
+  <query_body>
+RETURN <return_value>
+```
+
+<ParamField path="query_name" type="identifier" required>
+  The name of the query. Must start with a lowercase letter.
+</ParamField>
+
+<ParamField path="parameters" type="list">
+  Parameter definitions in the format `name: Type` or `name?: Type` for optional parameters.
+</ParamField>
+
+<ParamField path="query_body" type="statements">
+  Sequence of assignments, traversals, creations, and control flow statements.
+</ParamField>
+
+<ParamField path="return_value" type="expression" required>
+  Value or values to return from the query.
+</ParamField>
+
+## Basic Query Structure
+
+### Simple Query
+
+```hql
+QUERY get_user(user_id: ID) =>
+  N({id: user_id})
+RETURN _
+```
+
+### Query with Assignment
+
+```hql
+QUERY get_user_posts(user_id: ID) =>
+  user <- N({id: user_id})
+  posts <- user::OutE<AUTHORED>::ToN
+RETURN {user: user, posts: posts}
+```
+
+### Multi-Step Query
+
+```hql
+QUERY complex_query(user_id: ID, limit: I32) =>
+  user <- N({id: user_id})
+  following <- user::OutE<FOLLOWS>::ToN
+  posts <- following::OutE<AUTHORED>::ToN
+    ::ORDER<Desc>(_.created_at)
+    ::RANGE(0, limit)
+RETURN posts
+```
+
+## Parameters
+
+### Required Parameters
+
+```hql
+QUERY get_post(post_id: ID) =>
+  N({id: post_id})
+RETURN _
+```
+
+### Optional Parameters
+
+```hql
+QUERY search_users(name?: String, email?: String) =>
+  users <- N<User>
+    ::WHERE(
+      AND(
+        OR(name == NONE, _.name == name),
+        OR(email == NONE, _.email == email)
+      )
+    )
+RETURN users
+```
+
+<ParamField path="optional" type="modifier">
+  Use `?` suffix to make parameter optional. Optional parameters can be `NONE`.
+</ParamField>
+
+### Complex Parameter Types
+
+```hql
+QUERY batch_create_users(
+  users: [{
+    name: String,
+    email: String,
+    age: I32
+  }]
+) =>
+  FOR user IN users {
+    AddN<User>({
+      name: user.name,
+      email: user.email,
+      age: user.age
+    })
+  }
+RETURN true
+```
+
+## Traversal Syntax
+
+### Source Steps
+
+Start traversals from nodes, edges, or vectors:
+
+<ParamField path="N(<args>)" type="source">
+  Start from node(s)
+  
+  ```hql
+  N<User>              // All users
+  N<User>(id1, id2)    // Specific users by ID
+  N({email: "test"})   // User by indexed field
+  ```
+</ParamField>
+
+<ParamField path="E(<args>)" type="source">
+  Start from edge(s)
+  
+  ```hql
+  E<FOLLOWS>           // All FOLLOWS edges
+  E<FOLLOWS>(id)       // Specific edge by ID
+  ```
+</ParamField>
+
+<ParamField path="V(<args>)" type="source">
+  Start from vector(s)
+  
+  ```hql
+  V<Embedding>         // All embeddings
+  V<Embedding>(id)     // Specific embedding by ID
+  ```
+</ParamField>
+
+<ParamField path="SearchV<Type>(query, limit)" type="source">
+  Vector similarity search
+  
+  ```hql
+  SearchV<DocEmbedding>(Embed("query"), 10)
+  ```
+</ParamField>
+
+<ParamField path="SearchBM25<Type>(query, limit)" type="source">
+  BM25 full-text search
+  
+  ```hql
+  SearchBM25<Document>("search terms", 20)
+  ```
+</ParamField>
+
+### Graph Steps
+
+Traverse the graph structure:
+
+<ParamField path="OutE<Type>" type="step">
+  Follow outgoing edges of specified type
+  
+  ```hql
+  N({id: user_id})::OutE<FOLLOWS>
+  ```
+</ParamField>
+
+<ParamField path="InE<Type>" type="step">
+  Follow incoming edges of specified type
+  
+  ```hql
+  N({id: user_id})::InE<FOLLOWS>
+  ```
+</ParamField>
+
+<ParamField path="Out<NodeType>" type="step">
+  Traverse to outgoing nodes (OutE + ToN combined)
+  
+  ```hql
+  N({id: user_id})::Out<User>  // Following users
+  ```
+</ParamField>
+
+<ParamField path="In<NodeType>" type="step">
+  Traverse to incoming nodes (InE + FromN combined)
+  
+  ```hql
+  N({id: user_id})::In<User>   // Follower users
+  ```
+</ParamField>
+
+<ParamField path="ToN" type="step">
+  From edge to target node
+  
+  ```hql
+  E<FOLLOWS>()::ToN
+  ```
+</ParamField>
+
+<ParamField path="FromN" type="step">
+  From edge to source node
+  
+  ```hql
+  E<FOLLOWS>()::FromN
+  ```
+</ParamField>
+
+<ParamField path="ToV" type="step">
+  From edge to target vector
+</ParamField>
+
+<ParamField path="FromV" type="step">
+  From edge to source vector
+</ParamField>
+
+### Utility Steps
+
+<ParamField path="WHERE(condition)" type="step">
+  Filter results based on condition
+  
+  ```hql
+  N<User>::WHERE(_.age >= 18)
+  ```
+</ParamField>
+
+<ParamField path="ORDER<Asc|Desc>(field)" type="step">
+  Sort results
+  
+  ```hql
+  N<Post>::ORDER<Desc>(_.created_at)
+  ```
+</ParamField>
+
+<ParamField path="RANGE(start, end)" type="step">
+  Limit and offset results
+  
+  ```hql
+  N<User>::RANGE(0, 10)      // First 10
+  N<User>::RANGE(10, 20)     // Next 10
+  ```
+</ParamField>
+
+<ParamField path="COUNT" type="step">
+  Count results
+  
+  ```hql
+  N<User>::WHERE(_.active == true)::COUNT
+  ```
+</ParamField>
+
+<ParamField path="INTERSECT(traversal)" type="step">
+  Find intersection of two traversals
+  
+  ```hql
+  N<User>::INTERSECT(_::OutE<LIKES>::ToN)
+  ```
+</ParamField>
+
+<ParamField path="GROUP_BY(fields)" type="step">
+  Group results by fields
+  
+  ```hql
+  N<Post>::GROUP_BY(category, status)
+  ```
+</ParamField>
+
+<ParamField path="AGGREGATE_BY(fields)" type="step">
+  Aggregate results by fields
+  
+  ```hql
+  N<Order>::AGGREGATE_BY(customer_id)::COUNT
+  ```
+</ParamField>
+
+### Path Finding Steps
+
+<ParamField path="ShortestPath" type="step">
+  Find shortest path using BFS
+  
+  ```hql
+  N({id: start_id})
+    ::ShortestPath<FOLLOWS>
+    ::To(N({id: end_id})::ID)
+  ```
+</ParamField>
+
+<ParamField path="ShortestPathBFS" type="step">
+  Explicit BFS shortest path
+</ParamField>
+
+<ParamField path="ShortestPathDijkstras(weight_expr)" type="step">
+  Weighted shortest path using Dijkstra's algorithm
+  
+  ```hql
+  N({id: start_id})
+    ::ShortestPathDijkstras<ROAD>(_.distance)
+    ::To(N({id: end_id})::ID)
+  ```
+</ParamField>
+
+<ParamField path="ShortestPathAStar(weight_expr, heuristic)" type="step">
+  A* shortest path with heuristic
+  
+  ```hql
+  N({id: start_id})
+    ::ShortestPathAStar<ROAD>(_.distance, "euclidean")
+    ::To(N({id: end_id})::ID)
+  ```
+</ParamField>
+
+<Info>
+  Path finding implementation: `/home/daytona/workspace/source/helix-db/src/helix_engine/traversal_core/ops/util/paths.rs`
+</Info>
+
+## Boolean Operations
+
+### Comparison Operations
+
+```hql
+_.age::GT(18)              // Greater than
+_.age::GTE(18)             // Greater than or equal
+_.age::LT(65)              // Less than
+_.age::LTE(65)             // Less than or equal
+_.status::EQ("active")     // Equal
+_.status::NEQ("deleted")   // Not equal
+_.tags::CONTAINS("news")   // Contains value
+_.category::IS_IN(["tech", "science"])  // In array
+```
+
+### Logical Operations
+
+```hql
+AND(condition1, condition2, ...)     // All must be true
+OR(condition1, condition2, ...)      // At least one must be true
+!EXISTS(traversal)                   // Negation
+```
+
+### WHERE Examples
+
+```hql
+// Simple condition
+N<User>::WHERE(_.age >= 18)
+
+// Multiple conditions
+N<User>::WHERE(
+  AND(
+    _.age >= 18,
+    _.status == "active",
+    _.verified == true
+  )
+)
+
+// Complex logic
+N<Post>::WHERE(
+  OR(
+    AND(_.published == true, _.featured == true),
+    _.pinned == true
+  )
+)
+
+// EXISTS check
+N<User>::WHERE(
+  EXISTS(_::OutE<AUTHORED>::ToN)
+)
+
+// Negated EXISTS
+N<User>::WHERE(
+  !EXISTS(_::OutE<BANNED>::ToN)
+)
+```
+
+## Anonymous Traversals
+
+Use `_` for anonymous traversals within steps:
+
+```hql
+// In WHERE
+N<User>::WHERE(_::OutE<FOLLOWS>::COUNT::GT(100))
+
+// In INTERSECT
+N<User>::INTERSECT(_::OutE<LIKES>::ToN)
+
+// In ORDER
+N<Post>::ORDER<Desc>(_::InE<LIKES>::COUNT)
+```
+
+## Object Manipulation
+
+### Object Remapping
+
+```hql
+// Select specific fields
+N<User>::{
+  id: _.id,
+  name: _.name,
+  email: _.email
+}
+
+// Computed fields
+N<User>::{
+  id: _.id,
+  full_name: _.first_name,
+  post_count: _::OutE<AUTHORED>::COUNT
+}
+
+// Spread operator
+N<User>::{
+  ..,  // Include all existing fields
+  post_count: _::OutE<AUTHORED>::COUNT
+}
+```
+
+### Exclude Fields
+
+```hql
+N<User>::!{password, secret_key}
+```
+
+### Closure Step
+
+```hql
+N<User>::|user|{
+  id: user.id,
+  posts: user::OutE<AUTHORED>::ToN
+}
+```
+
+## Control Flow
+
+### FOR Loops
+
+```hql
+QUERY batch_process(items: [String]) =>
+  FOR item IN items {
+    AddN<Item>({name: item})
+  }
+RETURN true
+```
+
+### Object Destructuring
+
+```hql
+QUERY create_users(
+  users: [{name: String, email: String}]
+) =>
+  FOR {name, email} IN users {
+    AddN<User>({
+      name: name,
+      email: email
+    })
+  }
+RETURN true
+```
+
+### Object Access
+
+```hql
+QUERY process_data(
+  items: [{metadata: {id: String}}]
+) =>
+  FOR item.metadata IN items {
+    AddN<Item>({external_id: metadata.id})
+  }
+RETURN true
+```
+
+## RETURN Statements
+
+### Return Single Value
+
+```hql
+RETURN user.id
+RETURN true
+RETURN 42
+```
+
+### Return Multiple Values
+
+```hql
+RETURN user, posts, followers
+```
+
+### Return Object
+
+```hql
+RETURN {
+  user_id: user.id,
+  name: user.name,
+  post_count: posts::COUNT
+}
+```
+
+### Return Array
+
+```hql
+// Map to array of objects
+RETURN [
+  {
+    id: _.id,
+    title: _.title,
+    author: _::InE<AUTHORED>::FromN.name
+  }
+]
+
+// Array of identifiers
+RETURN [user, admin]
+```
+
+## Query Macros
+
+### MCP Macro
+
+Expose query as MCP (Model Context Protocol) tool:
+
+```hql
+#[mcp]
+QUERY search_documents(query: String) =>
+  SearchV<DocEmbedding>(Embed(query), 10)
+    ::FromV
+    ::InE<HAS_EMBEDDING>
+    ::FromN
+RETURN [
+  {
+    id: _.id,
+    title: _.title
+  }
+]
+```
+
+<Info>
+  MCP macro implementation: `/home/daytona/workspace/source/helix-db/src/grammar.pest:287-288`
+</Info>
+
+### Model Macro
+
+Specify embedding model for query:
+
+```hql
+#[model("text-embedding-3-large")]
+QUERY semantic_search(query: String) =>
+  SearchV<Embedding>(Embed(query), 10)
+RETURN _
+```
+
+## Advanced Examples
+
+### Friend Recommendations
+
+```hql
+QUERY recommend_friends(user_id: ID, limit: I32) =>
+  // Get user's friends
+  friends <- N({id: user_id})::Out<FOLLOWS>
+  
+  // Get friends of friends
+  recommendations <- friends
+    ::Out<FOLLOWS>
+    ::WHERE(
+      AND(
+        _.id != user_id,  // Exclude self
+        !EXISTS(_::InE<FOLLOWS>::FromN::WHERE(_.id == user_id))  // Not already following
+      )
+    )
+    ::GROUP_BY(id)
+    ::ORDER<Desc>(COUNT)
+    ::RANGE(0, limit)
+RETURN recommendations
+```
+
+### Hybrid Search with Filtering
+
+```hql
+QUERY search_products(
+  query: String,
+  category: String,
+  min_price: F64,
+  max_price: F64,
+  limit: I32
+) =>
+  results <- SearchV<ProductEmbedding>(Embed(query), limit * 3)
+    ::WHERE(
+      AND(
+        _.category == category,
+        _.price >= min_price,
+        _.price <= max_price
+      )
+    )
+    ::ORDER<Desc>(_.popularity)
+    ::RANGE(0, limit)
+RETURN [
+  {
+    id: _.id,
+    name: _.name,
+    price: _.price,
+    score: _.score
+  }
+]
+```
+
+### Graph Analytics
+
+```hql
+QUERY user_influence(user_id: ID) =>
+  user <- N({id: user_id})
+  
+  // Direct followers
+  follower_count <- user::InE<FOLLOWS>::COUNT
+  
+  // Posts engagement
+  total_likes <- user
+    ::OutE<AUTHORED>
+    ::ToN
+    ::InE<LIKES>
+    ::COUNT
+  
+  // Follower engagement rate
+  avg_likes_per_post <- user
+    ::OutE<AUTHORED>
+    ::ToN
+    ::AGGREGATE_BY(id)
+    ::InE<LIKES>
+    ::COUNT
+    ::{avg: AVG(COUNT)}
+RETURN {
+  user_id: user.id,
+  followers: follower_count,
+  total_likes: total_likes,
+  avg_engagement: avg_likes_per_post.avg
+}
+```
+
+## Best Practices
+
+<AccordionGroup>
+  <Accordion title="Use specific type filters early">
+    Apply `N<Type>` and edge type filters early in traversals to reduce data processing.
+    
+    ```hql
+    // Good
+    N<User>::OutE<FOLLOWS>::ToN
+    
+    // Less efficient
+    N()::OutE()::ToN::WHERE(_.type == "User")
+    ```
+  </Accordion>
+  
+  <Accordion title="Apply WHERE filters before expensive operations">
+    Filter data early to reduce computational cost of subsequent steps.
+    
+    ```hql
+    // Good
+    N<Post>::WHERE(_.published == true)::ORDER<Desc>(_.created_at)
+    
+    // Less efficient
+    N<Post>::ORDER<Desc>(_.created_at)::WHERE(_.published == true)
+    ```
+  </Accordion>
+  
+  <Accordion title="Use RANGE for pagination">
+    Implement pagination with RANGE for efficient data retrieval.
+    
+    ```hql
+    N<User>::ORDER<Asc>(_.name)::RANGE(page * size, (page + 1) * size)
+    ```
+  </Accordion>
+  
+  <Accordion title="Leverage indexes for lookups">
+    Use indexed fields for lookups instead of scanning all records.
+    
+    ```hql
+    // Good (using indexed field)
+    N({email: "user@example.com"})
+    
+    // Less efficient
+    N<User>::WHERE(_.email == "user@example.com")
+    ```
+  </Accordion>
+  
+  <Accordion title="Minimize data in RETURN">
+    Return only necessary fields to reduce data transfer.
+    
+    ```hql
+    RETURN {id: _.id, name: _.name}  // Only needed fields
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## Related
+
+<CardGroup cols={2}>
+  <Card title="Operations" icon="play" href="/api/operations">
+    AddN, AddE, AddV, and other operations
+  </Card>
+  <Card title="Functions" icon="function" href="/api/functions">
+    Built-in mathematical and aggregation functions
+  </Card>
+  <Card title="Node Definitions" icon="circle-nodes" href="/api/node-definitions">
+    Node schema definitions
+  </Card>
+  <Card title="Edge Definitions" icon="link" href="/api/edge-definitions">
+    Edge schema definitions
+  </Card>
+</CardGroup>

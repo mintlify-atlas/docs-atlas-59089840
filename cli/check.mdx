@@ -1,0 +1,391 @@
+---
+title: helix check
+description: Validate project configuration and queries
+---
+
+The `helix check` command validates your Helix project by checking query syntax, running static analysis, and verifying that the generated Rust code compiles correctly. This is useful for catching errors before deployment.
+
+## Usage
+
+```bash
+helix check [INSTANCE]
+```
+
+## Arguments
+
+<ParamField path="INSTANCE" type="string">
+  Instance to check. If not provided, checks all instances in the project.
+</ParamField>
+
+## Validation Steps
+
+The check command performs thorough validation:
+
+<Steps>
+  <Step title="Syntax validation">
+    Parses all `.hx` files and checks for syntax errors.
+    
+    **Output:**
+    ```
+    ✓ Validating syntax
+    ```
+  </Step>
+
+  <Step title="Repository sync">
+    Syncs the HelixDB repository cache (same as build).
+    
+    **Output:**
+    ```
+    ✓ Syncing repository
+    ```
+  </Step>
+
+  <Step title="Query compilation">
+    Compiles your queries into Rust code.
+    
+    **Output:**
+    ```
+    ✓ Compiling queries (5 queries)
+    ```
+  </Step>
+
+  <Step title="Cargo check">
+    Runs `cargo check` on the generated Rust code to verify it compiles.
+    
+    **Output:**
+    ```
+    ✓ Running cargo check
+    ```
+  </Step>
+</Steps>
+
+## Examples
+
+### Check Single Instance
+
+Validate a specific instance:
+
+```bash
+helix check dev
+```
+
+**Output:**
+```
+✓ Checking dev
+  ✓ Validating syntax
+  ✓ Syncing repository
+  ✓ Compiling queries (5 queries)
+  ✓ Running cargo check
+  ✓ Cargo check passed
+```
+
+### Check All Instances
+
+Validate all instances in your project:
+
+```bash
+helix check
+```
+
+**Output:**
+```
+✓ Checking dev
+  ✓ Validating syntax
+  ✓ Syncing repository
+  ✓ Compiling queries (5 queries)
+  ✓ Running cargo check
+  ✓ Cargo check passed
+
+✓ Checking staging
+  ✓ Validating syntax
+  ✓ Syncing repository
+  ✓ Compiling queries (5 queries)
+  ✓ Running cargo check
+  ✓ Cargo check passed
+
+✓ All instances checked successfully
+```
+
+### Check with Verbose Output
+
+See detailed validation steps:
+
+```bash
+helix check dev --verbose
+```
+
+**Verbose output:**
+```
+✓ Checking dev
+  ✓ Validating syntax
+    • Found 2 schema files
+    • Found 3 query files
+    • Parsed 5 queries
+  ✓ Syncing repository
+    • Repository cache up to date
+  ✓ Compiling queries (5 queries)
+    • Generating Rust code...
+    • Analyzing queries...
+  ✓ Running cargo check
+    • Running cargo check on generated code...
+  ✓ Cargo check passed
+```
+
+## Error Detection
+
+### Syntax Errors
+
+Detects syntax errors in `.hx` files:
+
+```
+✗ Checking dev
+  ✗ Validating syntax
+
+Error in queries.hx:15:5
+  |
+15|     friends <- N<User>(user_id)::Out<Follow
+  |                                             ^
+  |
+  = Expected closing '>' but found end of line
+```
+
+### Schema Errors
+
+Catches undefined types and missing schema definitions:
+
+```
+✗ Checking dev
+  ✗ Validating syntax
+
+Error in queries.hx:15:5
+  |
+15|     friends <- N<User>(user_id)::Out<Follow>
+  |                                      ^^^^^^^
+  |
+  = Type 'Follow' is not defined in schema
+  = Hint: Did you mean 'Follows'?
+```
+
+### Missing Schema
+
+Requires at least one schema definition:
+
+```
+✗ Checking dev
+  ✗ Validating syntax
+
+Error: no schema definitions found in project
+
+Searched all .hx files in the queries directory but found no N:: (node)
+or E:: (edge) definitions.
+
+Hint: add at least one schema definition like 'N::User { name: String }'
+      to your .hx files
+```
+
+### Type Errors
+
+Detects type mismatches:
+
+```
+✗ Checking dev
+  ✗ Validating syntax
+
+Error in queries.hx:18:9
+  |
+18|         RETURN user.Age
+  |                ^^^^^^^^
+  |
+  = Cannot return field 'Age' of type I64 from query expecting String
+  = Hint: Update query return type or cast the value
+```
+
+### Rust Compilation Errors
+
+If the generated Rust code fails to compile:
+
+```
+✗ Checking dev
+  ✓ Validating syntax
+  ✓ Syncing repository
+  ✓ Compiling queries (5 queries)
+  ✗ Running cargo check
+  ✗ Cargo check failed
+
+Error: Cargo check failed on generated Rust code
+
+This may indicate a bug in the Helix code generator.
+
+You can report this issue to help improve Helix.
+
+◆  Would you like to create a GitHub issue with diagnostic information?
+│  ● Yes
+│  ○ No
+```
+
+Selecting "Yes" automatically creates a GitHub issue with:
+- Your `.hx` source files
+- Generated Rust code
+- Compiler error messages
+- Environment information
+
+This helps the Helix team fix code generation bugs quickly.
+
+## Common Errors
+
+<AccordionGroup>
+  <Accordion title="Undefined schema type">
+    ```
+    Type 'Follow' is not defined in schema
+    ```
+    
+    **Cause:** You're referencing a schema type that doesn't exist.
+    
+    **Solution:** 
+    - Check spelling in your query
+    - Add the missing schema definition to `schema.hx`
+    - Verify the type name matches exactly (case-sensitive)
+  </Accordion>
+
+  <Accordion title="Missing schema definitions">
+    ```
+    no schema definitions found in project
+    ```
+    
+    **Cause:** No `N::` or `E::` definitions found in your `.hx` files.
+    
+    **Solution:** Add at least one schema definition:
+    ```hx
+    N::User {
+        Name: String,
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="Invalid traversal">
+    ```
+    Cannot traverse edge 'Follows' from node type 'Post'
+    ```
+    
+    **Cause:** Your schema defines `Follows` edges between `User` nodes, but you're trying to traverse from a `Post` node.
+    
+    **Solution:** Check your schema edge definitions:
+    ```hx
+    E::Follows {
+        From: User,  // Can only traverse from User
+        To: User,
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="Property not defined">
+    ```
+    Property 'Age' is not defined on node type 'User'
+    ```
+    
+    **Cause:** You're accessing a property that doesn't exist in the schema.
+    
+    **Solution:** Add the property to your schema:
+    ```hx
+    N::User {
+        Name: String,
+        Age: I64,  // Add this
+    }
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## CI/CD Integration
+
+Use `helix check` in your CI pipeline to catch errors before deployment:
+
+### GitHub Actions
+
+```yaml
+name: Validate Helix Project
+
+on: [push, pull_request]
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      
+      - name: Install Helix CLI
+        run: curl -sSL https://install.helix-db.com | sh
+      
+      - name: Check project
+        run: helix check
+```
+
+### GitLab CI
+
+```yaml
+validate:
+  stage: test
+  script:
+    - curl -sSL https://install.helix-db.com | sh
+    - helix check
+  only:
+    - merge_requests
+    - main
+```
+
+### Pre-commit Hook
+
+Add to `.git/hooks/pre-commit`:
+
+```bash
+#!/bin/sh
+
+echo "Validating Helix project..."
+helix check --quiet
+
+if [ $? -ne 0 ]; then
+    echo "❌ Helix validation failed. Fix errors before committing."
+    exit 1
+fi
+
+echo "✅ Helix validation passed"
+```
+
+Make it executable:
+
+```bash
+chmod +x .git/hooks/pre-commit
+```
+
+## Performance
+
+Validation times:
+
+- **Syntax validation:** < 1 second
+- **Compilation:** 5-30 seconds (depends on project size)
+- **Cargo check:** 10-60 seconds (depends on project size)
+
+First runs are slower due to Rust compilation caching.
+
+## Comparison with Build
+
+`helix check` vs `helix build`:
+
+| Feature | check | build |
+|---------|-------|-------|
+| Validates syntax | ✓ | ✓ |
+| Compiles queries | ✓ | ✓ |
+| Runs cargo check | ✓ | ✗ |
+| Builds Docker image | ✗ | ✓ |
+| Creates deployable artifact | ✗ | ✓ |
+| Time | Faster | Slower |
+
+Use `helix check` for validation, `helix build` for deployment preparation.
+
+## Next Steps
+
+After validation:
+
+- **Fix errors:** Address any validation errors
+- **Build:** `helix build dev`
+- **Deploy:** `helix push dev`
+- **Test:** `helix logs dev`

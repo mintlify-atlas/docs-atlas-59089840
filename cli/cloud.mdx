@@ -1,0 +1,544 @@
+---
+title: Cloud Operations
+description: Authentication, synchronization, and cloud management
+---
+
+Helix provides commands for managing authentication and synchronizing code with Helix Cloud instances.
+
+## helix auth
+
+Manage authentication with Helix Cloud.
+
+### helix auth login
+
+Log in to Helix Cloud using GitHub authentication.
+
+#### Usage
+
+```bash
+helix auth login
+```
+
+#### Authentication Flow
+
+<Steps>
+  <Step title="Initiate login">
+    Run the login command:
+    ```bash
+    helix auth login
+    ```
+  </Step>
+
+  <Step title="Open GitHub device flow">
+    The CLI displays a verification code and URL:
+    ```
+    ℹ Logging into Helix Cloud
+    
+    To Login please go here (https://github.com/login/device),
+    and enter the code: ABCD-1234
+    ```
+  </Step>
+
+  <Step title="Enter code on GitHub">
+    Open the URL in your browser and enter the verification code.
+  </Step>
+
+  <Step title="Authorize application">
+    Authorize the Helix CLI application on GitHub.
+  </Step>
+
+  <Step title="Complete login">
+    The CLI confirms successful authentication:
+    ```
+    ✓ Logged in successfully
+    ℹ Your credentials are stored in ~/.helix/credentials
+    ```
+  </Step>
+</Steps>
+
+#### Credentials Storage
+
+Credentials are stored in `~/.helix/credentials`:
+
+```
+helix_user_id=user_abc123
+helix_user_key=hx_key_xyz789...
+```
+
+<Warning>
+Keep your credentials file secure. Do not commit it to version control.
+</Warning>
+
+#### Re-authentication
+
+If you're already logged in, running `helix auth login` rotates your credentials:
+
+```
+You already have saved credentials. Running login rotates your user key
+and revokes previous user keys.
+
+To Login please go here (https://github.com/login/device),
+and enter the code: WXYZ-5678
+```
+
+---
+
+### helix auth logout
+
+Log out from Helix Cloud by removing local credentials.
+
+#### Usage
+
+```bash
+helix auth logout
+```
+
+#### Output
+
+```
+ℹ Logging out of Helix Cloud
+✓ Logged out successfully
+```
+
+This removes the `~/.helix/credentials` file. You'll need to run `helix auth login` again to use cloud features.
+
+---
+
+### helix auth create-key
+
+Rotate the API key for a specific cluster. This generates a new cluster API key and revokes the previous one.
+
+#### Usage
+
+```bash
+helix auth create-key <CLUSTER_ID>
+```
+
+<ParamField path="CLUSTER_ID" type="string" required>
+  The cluster ID to rotate the API key for
+</ParamField>
+
+#### Example
+
+```bash
+helix auth create-key cluster_abc123
+```
+
+**Output:**
+```
+ℹ Rotating API key for cluster: cluster_abc123
+
+✓ Cluster API key refresh completed
+ℹ Previous cluster keys were revoked after successful redeploy.
+
+Cluster: cluster_abc123
+New API key (shown once): hx_cluster_key_xyz789...
+
+ℹ Update HELIX_API_KEY in your environment before running queries.
+```
+
+<Warning>
+**Important:** Save the new API key immediately. It is only shown once.
+
+- Update your application's environment variables with the new key
+- Previous cluster keys are immediately revoked
+- Client applications using the old key will fail authentication
+</Warning>
+
+#### Error Handling
+
+**Not authenticated:**
+```
+Error: Authentication failed. Run 'helix auth login' to re-authenticate.
+```
+
+**Invalid cluster ID:**
+```
+Error: Failed to rotate API key: Cluster not found
+```
+
+**No permission:**
+```
+Error: Failed to rotate API key: You don't have permission to modify this cluster
+```
+
+---
+
+## helix sync
+
+Synchronize source code between local and cloud instances. This command intelligently detects changes and prompts for the sync direction.
+
+### Usage
+
+```bash
+helix sync [INSTANCE] [OPTIONS]
+```
+
+<ParamField path="INSTANCE" type="string">
+  Instance name to sync from. If not provided, you'll be prompted to select from available instances.
+</ParamField>
+
+### Options
+
+<ParamField path="--yes" type="boolean" default="false">
+  Overwrite files without confirmation prompts
+</ParamField>
+
+### Sync Modes
+
+#### Pull from Cloud
+
+Download `.hx` files from your deployed cloud instance:
+
+```bash
+helix sync production
+```
+
+**Interactive flow:**
+```
+┌  helix sync
+│
+│  Using project 'my-project' from helix.toml.
+│  Select a cluster to sync from.
+│
+◆  Select a cluster:
+│  ● production (cluster_abc123)
+│  ○ staging (cluster_xyz789)
+│
+✓ Syncing production
+  ✓ Fetching cloud changes
+
+◆  Cloud changes are newer. Pull cloud files to local?
+│  ● Yes
+│  ○ No
+
+Local files to be changed (2)
+  = schema.hx
+  = queries.hx
+
+Local files to be created (1)
+  + new-queries.hx
+
+✓ Sync reconciliation applied
+```
+
+#### Push to Cloud
+
+Upload local `.hx` files to your cloud instance:
+
+```bash
+helix sync staging --yes
+```
+
+If local changes are newer, you'll be prompted to push:
+
+```
+✓ Fetching cloud changes
+
+◆  Local changes are newer. Push your local files to cloud?
+│  ● Yes
+│  ○ No
+
+Cloud files to be changed (2)
+  = schema.hx
+  = queries.hx
+
+✓ Deploying to cloud
+✓ Sync reconciliation applied
+```
+
+### Change Detection
+
+The sync command compares local and cloud files using:
+
+- **SHA-256 hashes** - Detects content changes
+- **Timestamps** - Determines which version is newer
+- **File paths** - Tracks additions and deletions
+
+#### Divergence Authority
+
+When both local and cloud have changes:
+
+**Local newer:**
+```
+◆  Local changes are newer. Push your local files to cloud?
+│  ● Yes
+│  ○ No
+```
+
+**Cloud newer:**
+```
+◆  Cloud changes are newer. Pull cloud files to local?
+│  ● Yes
+│  ○ No
+```
+
+**Simultaneous changes (within 5 seconds):**
+```
+◆  Local and cloud changes happened at nearly the same time.
+│  Choose a sync action:
+│  ● Keep unchanged (Safe default)
+│  ○ Pull cloud (Overwrite local from cloud)
+│  ○ Push local (Push local changes to cloud)
+```
+
+### Sync Plan
+
+Before applying changes, the CLI shows a detailed plan:
+
+```
+Local files to be deleted (1)
+  - old-schema.hx
+
+Local files to be changed (3)
+  = schema.hx
+  = queries.hx
+  = types.hx
+
+Local files to be created (2)
+  + new-queries.hx
+  + utils.hx
+```
+
+**Legend:**
+- **-** (red) = File will be deleted
+- **=** (yellow) = File will be modified
+- **+** (green) = File will be created
+
+### Validation
+
+When pushing to cloud, local queries are validated first:
+
+```
+✓ Fetching cloud changes
+✗ Local .hx queries failed validation. Fix errors before pushing to cloud.
+
+Error in queries.hx:15:5
+  Type 'Follow' is not defined in schema
+```
+
+**Fix the errors and try again:**
+```bash
+# Fix validation errors
+vim db/queries.hx
+
+# Try sync again
+helix sync production
+```
+
+### Workspace Selection
+
+If you're not in a project directory, you'll be prompted to select a workspace:
+
+```bash
+helix sync
+```
+
+**Prompt:**
+```
+┌  helix sync
+│
+│  No helix.toml found. Select a workspace and cluster to sync from.
+│
+◆  Select a workspace:
+│  ● my-workspace
+│  ○ another-workspace
+│
+◆  Select a cluster:
+│  ● production (my-project)
+│  ○ staging (my-project)
+│  ○ dev (another-project)
+```
+
+This creates a new project in the current directory with the synced files.
+
+### Enterprise Instances
+
+For enterprise clusters, sync downloads `.rs` files instead of `.hx` files:
+
+```bash
+helix sync prod-enterprise
+```
+
+**Output:**
+```
+✓ Syncing prod-enterprise
+  ✓ Fetching .rs files
+  ✓ Writing .rs files (8 files)
+
+ℹ Synced 8 files from cluster 'cluster_ent123'
+ℹ Files saved to: ./db/
+```
+
+### Configuration Sync
+
+Sync also updates your `helix.toml` with the latest configuration from cloud:
+
+```
+ℹ Updated helix.toml with canonical project and cluster metadata from Helix Cloud.
+```
+
+This ensures your local configuration matches the cloud deployment.
+
+### Examples
+
+#### Pull Changes After Cloud Edit
+
+```bash
+# Someone edited queries in the cloud dashboard
+# Pull the latest version
+helix sync production
+
+# Review changes
+cat db/queries.hx
+```
+
+#### Push Local Changes
+
+```bash
+# Make local changes
+vim db/schema.hx
+vim db/queries.hx
+
+# Validate locally
+helix check dev
+
+# Push to cloud
+helix sync staging --yes
+```
+
+#### Sync Multiple Clusters
+
+```bash
+# Pull from production
+helix sync production
+
+# Make changes
+vim db/queries.hx
+
+# Push to staging first
+helix sync staging
+
+# Test in staging
+# ...
+
+# Push to production
+helix sync production
+```
+
+### Auto-confirm with --yes
+
+Skip confirmation prompts:
+
+```bash
+helix sync production --yes
+```
+
+Use this for:
+- CI/CD pipelines
+- Automated scripts
+- When you're confident about the sync direction
+
+<Warning>
+**Use --yes carefully:** This will overwrite files without confirmation. Make sure you have backups or version control.
+</Warning>
+
+## Authentication in CI/CD
+
+For automated deployments, store credentials as secrets:
+
+### GitHub Actions
+
+```yaml
+name: Deploy to Cloud
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      
+      - name: Install Helix CLI
+        run: curl -sSL https://install.helix-db.com | sh
+      
+      - name: Configure credentials
+        env:
+          HELIX_USER_ID: ${{ secrets.HELIX_USER_ID }}
+          HELIX_USER_KEY: ${{ secrets.HELIX_USER_KEY }}
+        run: |
+          mkdir -p ~/.helix
+          echo "helix_user_id=$HELIX_USER_ID" > ~/.helix/credentials
+          echo "helix_user_key=$HELIX_USER_KEY" >> ~/.helix/credentials
+      
+      - name: Deploy
+        run: helix push production
+```
+
+### GitLab CI
+
+```yaml
+deploy:
+  stage: deploy
+  script:
+    - curl -sSL https://install.helix-db.com | sh
+    - mkdir -p ~/.helix
+    - echo "helix_user_id=$HELIX_USER_ID" > ~/.helix/credentials
+    - echo "helix_user_key=$HELIX_USER_KEY" >> ~/.helix/credentials
+    - helix push production
+  only:
+    - main
+```
+
+## Troubleshooting
+
+### Not Authenticated
+
+```
+Error: Authentication failed. Run 'helix auth login' to re-authenticate.
+```
+
+**Solution:**
+```bash
+helix auth login
+```
+
+### No Clusters Found
+
+```
+Error: No clusters found in project 'my-project'.
+Create and deploy a cluster first.
+```
+
+**Solution:** Deploy a cluster:
+```bash
+helix add cloud --name production
+helix push production
+```
+
+### Sync Conflict
+
+```
+⚠ Local and cloud changes appear near-simultaneous.
+  Leaving files unchanged by default.
+```
+
+**Solution:** Manually choose a direction:
+```bash
+# Pull from cloud
+helix sync production
+# Select "Pull cloud" when prompted
+
+# Or push to cloud
+helix sync production  
+# Select "Push local" when prompted
+```
+
+## Next Steps
+
+- **Deploy to cloud:** [helix push](/cli/push)
+- **Monitor logs:** [helix logs](/cli/instances#logs)
+- **Manage instances:** [helix start, stop, restart](/cli/instances)

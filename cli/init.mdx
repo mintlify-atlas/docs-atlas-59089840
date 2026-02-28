@@ -1,0 +1,311 @@
+---
+title: helix init
+description: Initialize a new Helix project with helix.toml configuration
+---
+
+The `helix init` command creates a new Helix project in the current directory with all necessary configuration files and project structure.
+
+## Usage
+
+```bash
+helix init [OPTIONS]
+```
+
+## Options
+
+<ParamField path="--path" type="string">
+  Project directory (defaults to current directory)
+</ParamField>
+
+<ParamField path="--template" type="string" default="empty">
+  Project template to use
+</ParamField>
+
+<ParamField path="--queries-path" type="string" default="./db/">
+  Directory path for query files
+</ParamField>
+
+## Deployment Types
+
+### Local Instance (Default)
+
+Create a project with a local Docker-based instance:
+
+```bash
+helix init
+```
+
+This creates a basic project structure:
+
+```
+my-project/
+├── helix.toml
+├── db/
+│   ├── schema.hx
+│   └── queries.hx
+└── .gitignore
+```
+
+**Output:**
+```
+✓ Initializing my-project
+
+Next steps:
+  • Edit db/schema.hx to define your data model
+  • Add queries to db/queries.hx
+  • Run 'helix push dev' to start your development instance
+```
+
+### Helix Cloud
+
+Create a project configured for Helix Cloud deployment:
+
+```bash
+helix init cloud
+```
+
+This command:
+- Authenticates with Helix Cloud (if not already logged in)
+- Prompts for workspace selection
+- Creates or selects a project
+- Creates a cluster
+- Adds cloud configuration to `helix.toml`
+
+**Interactive Prompts:**
+```
+┌  helix init
+│
+◆  Select a workspace:
+│  ● my-workspace
+│  ○ another-workspace
+│
+◆  Project setup:
+│  ● Create new project
+│  ○ Use existing project
+│
+◆  Enter project name:
+│  my-helixdb-project
+│
+◆  Select deployment tier:
+│  ● Standard (managed)
+│  ○ Enterprise (HA)
+│
+◆  Select cluster configuration:
+│  ● Dev (2GB RAM, 1 vCPU)
+│  ○ Small (4GB RAM, 2 vCPU)
+│  ○ Medium (8GB RAM, 4 vCPU)
+│
+✓ Created cluster: cluster_abc123
+✓ Helix Cloud configuration saved to helix.toml
+```
+
+### AWS ECR
+
+Create a project configured for AWS ECR deployment:
+
+```bash
+helix init ecr
+```
+
+This command:
+- Authenticates with AWS (uses AWS CLI credentials)
+- Creates an ECR repository
+- Configures the project for ECR deployment
+
+### Fly.io
+
+Create a project configured for Fly.io deployment:
+
+```bash
+helix init fly \
+  --auth cli \
+  --volume-size 20 \
+  --vm-size shared-cpu-4x
+```
+
+<ParamField path="--auth" type="string" default="cli">
+  Authentication method for Fly.io
+</ParamField>
+
+<ParamField path="--volume-size" type="number" default="20">
+  Volume size in GB
+</ParamField>
+
+<ParamField path="--vm-size" type="string" default="shared-cpu-4x">
+  VM size for the Fly.io machine
+</ParamField>
+
+<ParamField path="--private" type="boolean" default="false">
+  Make the instance private
+</ParamField>
+
+## Generated Files
+
+### helix.toml
+
+The main configuration file:
+
+```toml
+[project]
+name = "my-project"
+queries = "./db/"
+container_runtime = "docker"
+
+[local.dev]
+port = 6969
+```
+
+### db/schema.hx
+
+Default schema file with examples:
+
+```hx
+// Start building your schema here.
+//
+// The schema is used to ensure type safety in your queries.
+//
+// Example:
+//
+// N::User {
+//     Name: String,
+//     Label: String,
+//     Age: I64,
+//     IsAdmin: Boolean,
+// }
+//
+// E::Knows {
+//     From: User,
+//     To: User,
+//     Properties: {
+//         Since: I64,
+//     }
+// }
+```
+
+### db/queries.hx
+
+Default queries file with examples:
+
+```hx
+// Start writing your queries here.
+//
+// Queries take the form:
+//     QUERY {query name}({input name}: {input type}) =>
+//         {variable} <- {traversal}
+//         RETURN {variable}
+//
+// Example:
+//     QUERY GetUserFriends(user_id: String) =>
+//         friends <- N<User>(user_id)::Out<Knows>
+//         RETURN friends
+```
+
+### .gitignore
+
+Ignores build artifacts:
+
+```
+.helix/
+target/
+*.log
+```
+
+## Custom Queries Directory
+
+Specify a custom location for query files:
+
+```bash
+helix init --queries-path ./queries/
+```
+
+This creates the query files in the `./queries/` directory instead of `./db/`.
+
+## Custom Project Directory
+
+Initialize in a specific directory:
+
+```bash
+helix init --path ~/projects/my-helix-app
+```
+
+## Examples
+
+### Basic Local Project
+
+```bash
+# Create in current directory
+helix init
+
+# Verify the structure
+ls -la
+# helix.toml  db/  .gitignore  .helix/
+```
+
+### Cloud Project with Custom Path
+
+```bash
+# Create cloud project in specific directory
+helix init cloud --path ~/projects/my-api
+
+# Navigate to the project
+cd ~/projects/my-api
+
+# Deploy to cloud
+helix push production
+```
+
+### Multiple Instances
+
+After initialization, add more instances:
+
+```bash
+# Initialize base project
+helix init
+
+# Add a cloud instance
+helix add cloud --name staging
+
+# Add another local instance
+helix add local --name test
+```
+
+## Cleanup on Error
+
+If initialization fails, the CLI automatically cleans up any created files and directories. This ensures your project directory remains clean even if an error occurs during setup.
+
+## Next Steps
+
+After initialization:
+
+<Steps>
+  <Step title="Define your schema">
+    Edit `db/schema.hx` to define your graph schema:
+    ```hx
+    N::User {
+        Name: String,
+        Email: String,
+    }
+    
+    E::Follows {
+        From: User,
+        To: User,
+    }
+    ```
+  </Step>
+
+  <Step title="Write queries">
+    Add queries to `db/queries.hx`:
+    ```hx
+    QUERY GetFollowers(user_id: String) =>
+        followers <- N<User>(user_id)::In<Follows>
+        RETURN followers
+    ```
+  </Step>
+
+  <Step title="Build and deploy">
+    Start your instance:
+    ```bash
+    helix push dev
+    ```
+  </Step>
+</Steps>

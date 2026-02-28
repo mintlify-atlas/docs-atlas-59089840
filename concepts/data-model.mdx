@@ -1,0 +1,362 @@
+---
+title: Data Model
+description: Understanding nodes, edges, and vectors in HelixDB
+---
+
+HelixDB's data model combines graph and vector primitives into a unified system. Every entity in HelixDB is either a **Node**, **Edge**, or **Vector**, each with distinct semantics and storage characteristics.
+
+## Core Primitives
+
+### Nodes (N::)
+
+Nodes represent entities in your graph. They have:
+
+- **ID:** A unique 128-bit identifier (UUID)
+- **Label:** A type name that categorizes the node
+- **Properties:** Key-value pairs storing arbitrary data
+
+**Schema Definition:**
+```hql
+N::User {
+    INDEX email: String,    // Indexed for fast lookups
+    name: String,
+    age: U32,
+    created_at: String,
+}
+```
+
+**Creating Nodes:**
+```hql
+QUERY createUser(email: String, name: String, age: U32) =>
+    user <- AddN<User>({
+        email: email,
+        name: name,
+        age: age,
+        created_at: Now()
+    })
+    RETURN user
+```
+
+<Info>
+The `INDEX` keyword creates a secondary index for O(1) lookups by that property. Without an index, property queries require a full scan.
+</Info>
+
+**Storage Representation:**
+
+Nodes are stored in the `nodes` database table:
+
+```rust
+// Key: 16 bytes (u128)
+pub type NodeId = u128;
+
+// Value: Bincode-serialized
+pub struct Node<'arena> {
+    pub id: u128,              // Not stored (used as key)
+    pub label: &'arena str,    // Node type
+    pub version: u8,           // Schema version
+    pub properties: Option<ImmutablePropertiesMap<'arena>>,
+}
+```
+
+### Edges (E::)
+
+Edges represent relationships between nodes. They have:
+
+- **ID:** A unique 128-bit identifier
+- **Label:** The relationship type
+- **From/To:** Source and destination nodes
+- **Properties:** Optional metadata about the relationship
+
+**Schema Definition:**
+```hql
+E::Follows {
+    From: User,
+    To: User,
+    Properties: {
+        since: String,
+        notifications_enabled: Bool,
+    }
+}
+```
+
+**Creating Edges:**
+```hql
+QUERY followUser(from_email: String, to_email: String) =>
+    from_user <- N<User>({email: from_email})
+    to_user <- N<User>({email: to_email})
+    edge <- AddE<Follows>({
+        since: Now(),
+        notifications_enabled: true
+    })::From(from_user)::To(to_user)
+    RETURN edge
+```
+
+**Storage Representation:**
+
+Edges use three tables for efficient bidirectional traversal:
+
+```rust
+// 1. Edge data: edges table
+key = edge_id(16)   // u128
+value = Edge { label, from_node, to_node, properties }
+
+// 2. Outgoing adjacency: out_edges table (DUP_SORT)
+key = from_node_id(16) | label_hash(4)    // 20 bytes
+value = edge_id(16) | to_node_id(16)      // 32 bytes (DUP_FIXED)
+
+// 3. Incoming adjacency: in_edges table (DUP_SORT)
+key = to_node_id(16) | label_hash(4)      // 20 bytes
+value = edge_id(16) | from_node_id(16)    // 32 bytes (DUP_FIXED)
+```
+
+<Tip>
+The DUP_SORT flag allows multiple values per key, and DUP_FIXED ensures all values are the same size (32 bytes), eliminating length headers. This enables retrieving all outgoing edges of a given label with a single database read.
+</Tip>
+
+**Bidirectional Traversal:**
+
+The dual adjacency structure enables efficient queries in both directions:
+
+```hql
+// Find who a user follows (outgoing edges)
+following <- N<User>({email: "alice@example.com"}) -E<Follows>-> N<User>
+
+// Find who follows a user (incoming edges)
+followers <- N<User> -E<Follows>-> N<User>({email: "alice@example.com"})
+```
+
+### Vectors (V::)
+
+Vectors represent embeddings for semantic similarity search. They combine:
+
+- **Vector data:** High-dimensional embeddings (f64[])
+- **HNSW index:** Multi-layer graph for fast ANN search
+- **Properties:** Metadata associated with the vector
+- **Graph connectivity:** Vectors can participate in graph relationships
+
+**Schema Definition:**
+```hql
+V::Chunk {
+    memory_id: ID,             // Reference to parent node
+    text_content: String,
+    order_in_document: U32,
+    created_at: String,
+}
+```
+
+**Creating Vectors:**
+```hql
+QUERY addChunk(text: String, order: U32) =>
+    chunk <- AddV<Chunk>(Embed(text), {
+        text_content: text,
+        order_in_document: order,
+        created_at: Now()
+    })
+    RETURN chunk
+```
+
+<Note>
+The `Embed()` function automatically generates embeddings using the configured model. You don't need to embed text before sending it to HelixDB.
+</Note>
+
+**Storage Representation:**
+
+Vectors use two specialized tables:
+
+```rust
+// 1. Vector embeddings: vectors table
+key = "v:" | vector_id(16) | level(8)  // HNSW level
+value = [f64; dimension]                // Raw embedding data
+
+// 2. Vector properties: vector_data table
+key = vector_id(16)
+value = VectorWithoutData { label, properties, level, deleted }
+
+// 3. HNSW edges: hnsw_out_nodes table
+key = source_id(16) | level(8) | sink_id(16)
+value = ()  // Unit type, presence indicates edge
+```
+
+**HNSW Multi-Layer Structure:**
+
+Vectors exist at multiple levels in the HNSW index:
+
+- **Level 0:** All vectors (base layer)
+- **Level 1+:** Progressively sparser subsets for hierarchical search
+
+The level is determined probabilistically during insertion:
+
+```rust
+pub fn get_new_level(&self) -> usize {
+    let r: f64 = rng.random();
+    (-r.ln() * self.config.m_l).floor() as usize
+}
+```
+
+## Property Types
+
+HelixDB supports rich property types:
+
+| Type | Description | Example |
+|------|-------------|----------|
+| `String` | UTF-8 text | `name: "Alice"` |
+| `I32`, `I64` | Signed integers | `age: 25` |
+| `U32`, `U64` | Unsigned integers | `count: 100` |
+| `F32`, `F64` | Floating point | `score: 0.95` |
+| `Bool` | Boolean | `active: true` |
+| `ID` | Node/Edge reference | `user_id: user.id` |
+| `[Type]` | Array | `tags: ["rust", "database"]` |
+
+<Info>
+Properties are stored in a compact binary format using bincode serialization, minimizing storage overhead.
+</Info>
+
+## Indexing Strategies
+
+### Primary Keys (ID)
+
+Every node, edge, and vector has a u128 ID that serves as its primary key:
+
+```rust
+pub type NodeId = u128;
+pub type EdgeId = u128;
+```
+
+IDs are UUIDs, ensuring global uniqueness without coordination.
+
+### Secondary Indices (INDEX)
+
+Secondary indices enable fast lookups by property:
+
+```hql
+N::User {
+    INDEX email: String,    // Unique index
+    INDEX name: String,     // Non-unique index
+    age: U32,               // Not indexed
+}
+```
+
+**Index Types:**
+
+1. **Unique Index:** Enforces uniqueness, O(1) lookup
+   ```hql
+   INDEX email: String
+   ```
+
+2. **Non-Unique Index:** Allows duplicates, returns all matches
+   ```hql
+   INDEX name: String
+   ```
+
+**Storage:**
+
+Indices are stored in dedicated LMDB tables:
+
+```rust
+// Unique index
+key = serialized_property_value
+value = node_id (single)
+
+// Non-unique index (DUP_SORT)
+key = serialized_property_value
+value = node_id (multiple, one per matching node)
+```
+
+### Vector Indices (HNSW)
+
+Vectors are automatically indexed in the HNSW structure:
+
+```hql
+chunk <- AddV<Chunk>(Embed(text), {...})
+// Vector is immediately searchable
+```
+
+No separate indexing step is required.
+
+## Graph-Vector Hybrid
+
+The key innovation in HelixDB is that vectors are first-class graph citizens:
+
+```hql
+E::HasChunk {
+    From: Memory,      // Node
+    To: Chunk,         // Vector
+    Properties: {
+        similarity_score: F32,
+    }
+}
+```
+
+This enables queries that combine semantic search and graph traversal:
+
+```hql
+QUERY findRelatedMemories(query: String, user_email: String) =>
+    // Vector search
+    chunks <- VS<Chunk>(Embed(query), 10)
+    
+    // Graph traversal from vectors
+    memories <- chunks <-E<HasChunk>- N<Memory>
+    
+    // Filter by graph properties
+    user <- N<User>({email: user_email})
+    user_memories <- user -E<Owns>-> memories
+    
+    RETURN user_memories
+```
+
+<Tip>
+This query combines vector similarity (`VS`), edge traversal (`<-E<HasChunk>-`), and property filtering in a single operation.
+</Tip>
+
+## Data Lifecycle
+
+### Creation
+
+- **Nodes:** `AddN<Type>({...})`
+- **Edges:** `AddE<Type>({...})::From(n1)::To(n2)`
+- **Vectors:** `AddV<Type>(Embed(text), {...})`
+
+### Reading
+
+- **By ID:** `N<Type>(id)`
+- **By Index:** `N<Type>({property: value})`
+- **By Traversal:** `node -E<Type>-> N<Type>`
+- **By Similarity:** `VS<Type>(embedding, k)`
+
+### Updating
+
+Updates use the `UPDATE` operator:
+
+```hql
+QUERY updateUser(email: String, new_name: String) =>
+    user <- N<User>({email: email})
+    updated <- UPDATE user SET { name: new_name }
+    RETURN updated
+```
+
+### Deletion
+
+- **Nodes:** `DropN(node)` (also deletes connected edges)
+- **Edges:** `DropE(edge)`
+- **Vectors:** Soft delete (marked as deleted)
+
+<Note>
+Deleting a node automatically cascades to all connected edges to maintain referential integrity.
+</Note>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Graph-Vector Architecture" href="/concepts/graph-vector-architecture" icon="diagram-project">
+    Learn how graph and vector capabilities integrate
+  </Card>
+  <Card title="Type Safety" href="/concepts/type-safety" icon="shield-check">
+    Explore HelixQL's type system
+  </Card>
+  <Card title="Schema Design" href="/documentation/hql/schema" icon="pen-ruler">
+    Best practices for modeling your data
+  </Card>
+  <Card title="Query Guide" href="/documentation/hql/queries" icon="code">
+    Write powerful HelixQL queries
+  </Card>
+</CardGroup>

@@ -1,0 +1,421 @@
+---
+title: 'Edge Definitions'
+description: 'E:: syntax for defining relationships and edge schemas in HelixDB'
+icon: 'link'
+---
+
+## Overview
+
+Edges represent relationships between nodes in your graph. They are defined using the `E::` prefix and specify source (From) and target (To) node types.
+
+## Syntax
+
+```hql
+E::<TypeName> [UNIQUE] {
+  From: <NodeType>,
+  To: <NodeType>,
+  Properties: {
+    [INDEX | UNIQUE INDEX] field_name: FieldType [DEFAULT value],
+    ...
+  }
+}
+```
+
+<ParamField path="TypeName" type="string" required>
+  The edge type name. Must start with an uppercase letter and contain only alphanumeric characters and underscores.
+</ParamField>
+
+<ParamField path="UNIQUE" type="modifier">
+  Optional modifier that prevents duplicate edges between the same nodes. Only one edge of this type can exist from a given source to a given target.
+</ParamField>
+
+<ParamField path="From" type="NodeType" required>
+  The source node type for this relationship.
+</ParamField>
+
+<ParamField path="To" type="NodeType" required>
+  The target node type for this relationship.
+</ParamField>
+
+<ParamField path="Properties" type="object">
+  Optional field definitions for edge properties.
+</ParamField>
+
+## Basic Examples
+
+### Simple Edge Without Properties
+
+```hql
+E::FOLLOWS {
+  From: User,
+  To: User
+}
+```
+
+### Edge With Properties
+
+```hql
+E::AUTHORED {
+  From: User,
+  To: Article,
+  Properties: {
+    created_at: Date DEFAULT NOW,
+    role: String
+  }
+}
+```
+
+### Unique Edge
+
+```hql
+E::LIKES UNIQUE {
+  From: User,
+  To: Post,
+  Properties: {
+    liked_at: Date DEFAULT NOW
+  }
+}
+```
+
+<Note>
+  The `UNIQUE` modifier ensures a user can only like a post once. Attempting to create a duplicate edge will fail.
+</Note>
+
+## Edge Properties
+
+Edge properties support all the same field types and modifiers as nodes:
+
+- All primitive types (String, I32, F64, Boolean, etc.)
+- Complex types (Arrays, Objects)
+- Special types (ID, Date)
+- Field modifiers (INDEX, UNIQUE INDEX, DEFAULT)
+
+```hql
+E::RATED {
+  From: User,
+  To: Movie,
+  Properties: {
+    INDEX score: I32,
+    review: String,
+    helpful_count: I32 DEFAULT 0,
+    rated_at: Date DEFAULT NOW,
+    tags: [String]
+  }
+}
+```
+
+See [Node Definitions](/api/node-definitions) for complete field type reference.
+
+## Storage Implementation
+
+Edges are stored using three LMDB databases for efficient graph traversal:
+
+### Edges Database
+
+Stores the edge data itself:
+
+- **Database**: `edges`
+- **Key**: 128-bit edge UUID (`U128<BE>`)
+- **Value**: Bincode-serialized edge containing:
+  - `id`: u128
+  - `label`: &str (edge type name)
+  - `version`: u16
+  - `from_node`: u128
+  - `to_node`: u128
+  - `properties`: Optional property map
+
+<Info>
+  Edge storage is implemented in `/home/daytona/workspace/source/helix-db/src/helix_engine/storage_core/mod.rs:106-112`
+</Info>
+
+### Outgoing Edges Index
+
+Enables fast traversal from source nodes:
+
+- **Database**: `out_edges`
+- **Key**: `from_node_id + label_hash` (20 + 4 bytes)
+- **Value**: `edge_id + to_node_id` (16 + 16 bytes)
+- **Flags**: `DUP_SORT | DUP_FIXED` for efficient duplicate key storage
+
+```hql
+// Enables efficient: N(<id>)::OutE(<EdgeType>)
+```
+
+<Info>
+  Outgoing edge index: `/home/daytona/workspace/source/helix-db/src/helix_engine/storage_core/mod.rs:114-124`
+</Info>
+
+### Incoming Edges Index
+
+Enables fast traversal to target nodes:
+
+- **Database**: `in_edges`
+- **Key**: `to_node_id + label_hash` (20 + 4 bytes)
+- **Value**: `edge_id + from_node_id` (16 + 16 bytes)
+- **Flags**: `DUP_SORT | DUP_FIXED`
+
+```hql
+// Enables efficient: N(<id>)::InE(<EdgeType>)
+```
+
+<Info>
+  Incoming edge index: `/home/daytona/workspace/source/helix-db/src/helix_engine/storage_core/mod.rs:126-136`
+</Info>
+
+## UNIQUE Edges
+
+The `UNIQUE` modifier prevents duplicate edges:
+
+```hql
+E::MANAGES UNIQUE {
+  From: User,
+  To: Team
+}
+```
+
+Implementation uses LMDB's `NO_OVERWRITE` flag:
+
+```rust
+// Prevents duplicate edges with same from/to nodes
+PutFlags::NO_OVERWRITE vs PutFlags::APPEND
+```
+
+<Warning>
+  Attempting to create a duplicate UNIQUE edge returns a constraint violation error.
+</Warning>
+
+<Info>
+  UNIQUE edge implementation: `/home/daytona/workspace/source/helix-db/src/helix_engine/traversal_core/ops/source/add_e.rs:98-110`
+</Info>
+
+## Advanced Examples
+
+### Social Network Edges
+
+```hql
+E::FOLLOWS UNIQUE {
+  From: User,
+  To: User,
+  Properties: {
+    followed_at: Date DEFAULT NOW,
+    notification_enabled: Boolean DEFAULT true
+  }
+}
+
+E::BLOCKS UNIQUE {
+  From: User,
+  To: User,
+  Properties: {
+    blocked_at: Date DEFAULT NOW,
+    reason: String
+  }
+}
+```
+
+### Content Relationships
+
+```hql
+E::COMMENTED_ON {
+  From: User,
+  To: Post,
+  Properties: {
+    comment_id: ID,
+    content: String,
+    created_at: Date DEFAULT NOW,
+    edited: Boolean DEFAULT false
+  }
+}
+
+E::BELONGS_TO {
+  From: Post,
+  To: Category
+}
+```
+
+### Weighted Edges
+
+```hql
+E::COLLABORATES_WITH {
+  From: User,
+  To: User,
+  Properties: {
+    strength: F64,
+    projects: [String],
+    since: Date
+  }
+}
+```
+
+## Creating Edges in Queries
+
+Use the `AddE` operation to create edges:
+
+```hql
+QUERY create_follow(user_id: ID, target_id: ID) =>
+  AddE<FOLLOWS>({
+    followed_at: NOW
+  })
+  ::From(N({id: user_id})::ID)
+  ::To(N({id: target_id})::ID)
+RETURN true
+```
+
+For edges without properties:
+
+```hql
+QUERY create_like(user_id: ID, post_id: ID) =>
+  AddE<LIKES>
+  ::From(N({id: user_id})::ID)
+  ::To(N({id: post_id})::ID)
+RETURN true
+```
+
+See [Operations](/api/operations) for complete AddE documentation.
+
+## Graph Traversal
+
+Edge definitions enable powerful graph traversals:
+
+### Outgoing Traversal
+
+```hql
+// Find all users followed by a user
+N({id: user_id})
+::OutE<FOLLOWS>  // Traverse outgoing FOLLOWS edges
+::ToN            // Get target nodes
+```
+
+### Incoming Traversal
+
+```hql
+// Find all users following a user
+N({id: user_id})
+::InE<FOLLOWS>   // Traverse incoming FOLLOWS edges
+::FromN          // Get source nodes
+```
+
+### Composite Traversal
+
+```hql
+// Find all articles authored by users I follow
+N({id: user_id})
+::OutE<FOLLOWS>
+::ToN
+::OutE<AUTHORED>
+::ToN
+```
+
+See [Query Syntax](/api/query-syntax) for complete traversal documentation.
+
+## Edge Label Hashing
+
+Edge labels are hashed for efficient storage and lookup:
+
+```rust
+// Label hash function ensures compact index keys
+fn hash_label(label: &str, version: Option<u16>) -> u32
+```
+
+<Info>
+  Label hashing implementation: `/home/daytona/workspace/source/helix-db/src/utils/label_hash.rs`
+</Info>
+
+## Multi-Type Relationships
+
+You can define multiple edge types between the same node types:
+
+```hql
+E::FOLLOWS {
+  From: User,
+  To: User
+}
+
+E::MENTIONS {
+  From: User,
+  To: User,
+  Properties: {
+    context: String,
+    mentioned_at: Date DEFAULT NOW
+  }
+}
+
+E::TAGGED {
+  From: User,
+  To: User,
+  Properties: {
+    post_id: ID,
+    tagged_at: Date DEFAULT NOW
+  }
+}
+```
+
+## Best Practices
+
+<AccordionGroup>
+  <Accordion title="Use UNIQUE for one-to-one relationships">
+    Apply `UNIQUE` modifier for relationships like MANAGES, MARRIED_TO, or LIKES where only one edge should exist.
+  </Accordion>
+  
+  <Accordion title="Add timestamps to track relationships">
+    Include `created_at: Date DEFAULT NOW` to track when relationships were established.
+  </Accordion>
+  
+  <Accordion title="Index frequently filtered properties">
+    Add `INDEX` to edge properties used in WHERE clauses for better query performance.
+  </Accordion>
+  
+  <Accordion title="Use meaningful edge names">
+    Choose descriptive names like AUTHORED, BELONGS_TO, MANAGES rather than generic names like RELATES_TO.
+  </Accordion>
+  
+  <Accordion title="Consider bidirectional semantics">
+    Define separate edge types for bidirectional relationships (e.g., FOLLOWS vs FOLLOWED_BY) when they have different semantics.
+  </Accordion>
+</AccordionGroup>
+
+## Schema Evolution
+
+Edge definitions support versioning for migrations:
+
+```hql
+schema::1 {
+  E::RATED {
+    From: User,
+    To: Movie,
+    Properties: {
+      score: I32
+    }
+  }
+}
+
+schema::2 {
+  E::RATED {
+    From: User,
+    To: Movie,
+    Properties: {
+      score: I32,
+      review: String,
+      rated_at: Date DEFAULT NOW
+    }
+  }
+}
+```
+
+See [Migrations](/advanced/migrations) for migration strategies.
+
+## Related
+
+<CardGroup cols={2}>
+  <Card title="Node Definitions" icon="circle-nodes" href="/api/node-definitions">
+    Define node types for edge endpoints
+  </Card>
+  <Card title="Operations" icon="play" href="/api/operations">
+    AddE operation for creating edges
+  </Card>
+  <Card title="Query Syntax" icon="code" href="/api/query-syntax">
+    Traverse edges in queries
+  </Card>
+  <Card title="Indexing" icon="magnifying-glass" href="/advanced/indexing">
+    Edge index configuration and performance
+  </Card>
+</CardGroup>

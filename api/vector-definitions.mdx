@@ -1,0 +1,468 @@
+---
+title: 'Vector Definitions'
+description: 'V:: syntax for defining vector embeddings and semantic search schemas'
+icon: 'vector-square'
+---
+
+## Overview
+
+Vectors represent embeddings for semantic search in your graph. They are defined using the `V::` prefix and stored in an HNSW (Hierarchical Navigable Small World) index for efficient similarity search.
+
+## Syntax
+
+```hql
+V::<TypeName> {
+  [INDEX | UNIQUE INDEX] field_name: FieldType [DEFAULT value],
+  ...
+}
+```
+
+<ParamField path="TypeName" type="string" required>
+  The vector type name. Must start with an uppercase letter and contain only alphanumeric characters and underscores.
+</ParamField>
+
+<ParamField path="fields" type="object">
+  Optional metadata fields for the vector. The embedding itself is stored separately from these properties.
+</ParamField>
+
+## Basic Examples
+
+### Simple Vector Definition
+
+```hql
+V::DocumentEmbedding {
+  document_id: ID,
+  created_at: Date DEFAULT NOW
+}
+```
+
+### Vector with Metadata
+
+```hql
+V::ProductEmbedding {
+  INDEX category: String,
+  product_id: ID,
+  name: String,
+  price: F64,
+  indexed_at: Date DEFAULT NOW
+}
+```
+
+### Vector Without Metadata
+
+```hql
+V::ImageEmbedding
+```
+
+<Note>
+  Vector definitions can omit the body if no metadata fields are needed. The embedding vector is stored separately.
+</Note>
+
+## Vector Storage
+
+Vectors use a specialized storage architecture combining LMDB and HNSW indices:
+
+### Vector Data Structure
+
+```rust
+pub struct HVector<'arena> {
+    pub id: u128,
+    pub label: &'arena str,
+    pub embedding: &'arena [f64],
+    pub properties: Option<ImmutablePropertiesMap<'arena>>,
+}
+```
+
+<Info>
+  Vector structure: `/home/daytona/workspace/source/helix-db/src/helix_engine/vector_core/vector.rs`
+</Info>
+
+### HNSW Index Configuration
+
+HelixDB uses HNSW (Hierarchical Navigable Small World) for vector indexing:
+
+<ParamField path="m" type="integer" default="16">
+  Number of bidirectional links created for each node. Higher values improve recall but increase memory usage.
+  
+  - Low (8-12): Lower memory, faster insertion, lower recall
+  - Medium (16-24): Balanced performance
+  - High (32-64): Higher memory, slower insertion, higher recall
+</ParamField>
+
+<ParamField path="ef_construction" type="integer" default="200">
+  Size of dynamic candidate list during index construction. Higher values improve index quality but slow insertion.
+  
+  - Typical range: 100-500
+  - Recommended: 200 for balanced performance
+</ParamField>
+
+<ParamField path="ef_search" type="integer" default="50">
+  Size of dynamic candidate list during search. Higher values improve recall but slow queries.
+  
+  - Low (10-30): Fast search, lower recall
+  - Medium (50-100): Balanced
+  - High (100-500): Slower search, higher recall
+</ParamField>
+
+<Info>
+  HNSW configuration: `/home/daytona/workspace/source/helix-db/src/helix_engine/storage_core/mod.rs:177-186`
+</Info>
+
+## Vector Operations
+
+### Creating Vectors
+
+Use the `AddV` operation to create vectors:
+
+```hql
+QUERY add_document_vector(doc_id: ID, text: String) =>
+  AddV<DocumentEmbedding>(
+    Embed(text),
+    {
+      document_id: doc_id,
+      created_at: NOW
+    }
+  )
+RETURN _.id
+```
+
+<ParamField path="embedding" type="vector" required>
+  Can be provided as:
+  - `Embed(text)` - Generate embedding from text using configured model
+  - `[f64, ...]` - Literal vector array
+  - Variable containing vector data
+</ParamField>
+
+<ParamField path="metadata" type="object">
+  Optional metadata fields matching the vector schema definition
+</ParamField>
+
+### Batch Vector Insertion
+
+```hql
+QUERY batch_add_vectors(vectors: [{text: String, doc_id: ID}]) =>
+  BatchAddV<DocumentEmbedding>(vectors)
+RETURN true
+```
+
+<Note>
+  `BatchAddV` is optimized for inserting multiple vectors efficiently. Each item should contain embedding data and metadata.
+</Note>
+
+### Vector Search
+
+```hql
+QUERY search_similar(query: String, limit: I32) =>
+  SearchV<DocumentEmbedding>(
+    Embed(query),
+    limit
+  )
+RETURN [
+  {
+    id: _.id,
+    document_id: _.document_id,
+    score: _.score
+  }
+]
+```
+
+<ParamField path="query" type="vector" required>
+  Query vector for similarity search. Can use `Embed()` or provide vector directly.
+</ParamField>
+
+<ParamField path="limit" type="integer" required>
+  Maximum number of results to return (k-nearest neighbors)
+</ParamField>
+
+See [Operations](/api/operations) for complete vector operation documentation.
+
+## Distance Metrics
+
+HelixDB supports multiple distance metrics for vector similarity:
+
+### Cosine Distance (Default)
+
+```rust
+pub fn cosine_distance(a: &[f64], b: &[f64]) -> f32 {
+    1.0 - cosine_similarity(a, b)
+}
+```
+
+Best for: Text embeddings, normalized vectors
+
+### Euclidean Distance (L2)
+
+```rust
+pub fn euclidean_distance(a: &[f64], b: &[f64]) -> f32 {
+    a.iter()
+        .zip(b.iter())
+        .map(|(x, y)| (x - y).powi(2))
+        .sum::<f64>()
+        .sqrt() as f32
+}
+```
+
+Best for: Spatial data, non-normalized vectors
+
+### Dot Product
+
+```rust
+pub fn dot_product(a: &[f64], b: &[f64]) -> f32 {
+    a.iter().zip(b.iter()).map(|(x, y)| x * y).sum::<f64>() as f32
+}
+```
+
+Best for: When vectors are already normalized and you need maximum speed
+
+<Info>
+  Distance metrics: `/home/daytona/workspace/source/helix-db/src/helix_engine/vector_core/vector_distance.rs`
+</Info>
+
+## Embedding Generation
+
+The `Embed()` function generates embeddings using the configured model:
+
+```hql
+QUERY add_with_embedding(text: String) =>
+  AddV<DocumentEmbedding>(
+    Embed(text),  // Automatically generates embedding
+    {}
+  )
+RETURN _.id
+```
+
+<ParamField path="text" type="string">
+  Text to generate embedding from
+</ParamField>
+
+<Info>
+  Configure embedding model in storage config:
+  ```rust
+  StorageConfig {
+      embedding_model: Some("model-name")
+  }
+  ```
+  
+  Implementation: `/home/daytona/workspace/source/helix-db/src/helix_engine/storage_core/mod.rs:48-52`
+</Info>
+
+## Hybrid Search
+
+Combine vector search with BM25 for powerful hybrid retrieval:
+
+```hql
+QUERY hybrid_search(query: String, limit: I32) =>
+  vector_results <- SearchV<DocumentEmbedding>(Embed(query), limit)
+  bm25_results <- SearchBM25<Document>(query, limit)
+  
+  // Combine and rerank results
+  combined <- [vector_results, bm25_results]
+RETURN combined::RerankRRF(k: 60)
+```
+
+See [Functions](/api/functions) for reranking operations.
+
+## Vector Graph Integration
+
+Vectors can connect to nodes via edges:
+
+```hql
+// Define edge from node to vector
+E::HAS_EMBEDDING {
+  From: Document,
+  To: DocumentEmbedding
+}
+
+// Query to add document with embedding
+QUERY add_document_with_embedding(
+  title: String,
+  content: String
+) =>
+  doc <- AddN<Document>({title: title})
+  vec <- AddV<DocumentEmbedding>(Embed(content), {})
+  
+  AddE<HAS_EMBEDDING>
+  ::From(doc::ID)
+  ::To(vec::ID)
+RETURN {doc_id: doc.id, vec_id: vec.id}
+```
+
+### Traversal from Vectors
+
+```hql
+// Find documents by semantic similarity
+QUERY find_similar_documents(query: String, limit: I32) =>
+  SearchV<DocumentEmbedding>(Embed(query), limit)
+  ::FromV         // Traverse from vector to source node
+  ::InE<HAS_EMBEDDING>
+  ::FromN         // Get document node
+RETURN [
+  {
+    id: _.id,
+    title: _.title
+  }
+]
+```
+
+## Advanced Examples
+
+### Multi-Modal Embeddings
+
+```hql
+V::ImageEmbedding {
+  image_url: String,
+  width: I32,
+  height: I32,
+  format: String
+}
+
+V::TextEmbedding {
+  source_text: String,
+  language: String,
+  model_version: String
+}
+
+V::AudioEmbedding {
+  duration_ms: I32,
+  sample_rate: I32,
+  format: String
+}
+```
+
+### Filtered Vector Search
+
+```hql
+QUERY search_by_category(
+  query: String,
+  category: String,
+  limit: I32
+) =>
+  SearchV<ProductEmbedding>(Embed(query), limit * 3)
+  ::WHERE(_.category == category)
+  ::RANGE(0, limit)
+RETURN _
+```
+
+<Note>
+  Filtering after search retrieves more candidates (limit * 3) before applying the filter to ensure sufficient results.
+</Note>
+
+### Semantic Recommendations
+
+```hql
+QUERY recommend_similar_products(
+  product_id: ID,
+  limit: I32
+) =>
+  // Get product's embedding
+  product_vec <- N({id: product_id})
+    ::OutE<HAS_EMBEDDING>
+    ::ToV
+  
+  // Find similar embeddings
+  SearchV<ProductEmbedding>(product_vec.embedding, limit + 1)
+  ::WHERE(_.product_id != product_id)  // Exclude original
+  ::RANGE(0, limit)
+RETURN [
+  {
+    product_id: _.product_id,
+    similarity_score: _.score
+  }
+]
+```
+
+## Performance Tuning
+
+### Index Size vs Query Speed
+
+<ParamField path="Small datasets (< 10K vectors)">
+  - `m`: 8-12
+  - `ef_construction`: 100
+  - `ef_search`: 30-50
+</ParamField>
+
+<ParamField path="Medium datasets (10K - 1M vectors)">
+  - `m`: 16-24
+  - `ef_construction`: 200
+  - `ef_search`: 50-100
+</ParamField>
+
+<ParamField path="Large datasets (> 1M vectors)">
+  - `m`: 24-48
+  - `ef_construction`: 300-500
+  - `ef_search`: 100-200
+</ParamField>
+
+### Memory Considerations
+
+HNSW memory usage approximation:
+
+```
+Memory ≈ (num_vectors * vector_dim * 8 bytes) + (num_vectors * m * 2 * 16 bytes)
+```
+
+For 1M vectors of 768 dimensions with m=16:
+```
+≈ (1M * 768 * 8) + (1M * 16 * 2 * 16)
+≈ 6.1 GB + 0.5 GB
+≈ 6.6 GB
+```
+
+See [Performance](/advanced/performance) for detailed tuning guidance.
+
+## Vector Without Data
+
+For efficient metadata-only queries, HelixDB supports vector references without loading embedding data:
+
+```rust
+pub struct VectorWithoutData {
+    pub id: u128,
+    pub label: String,
+    // embedding data not loaded
+}
+```
+
+<Info>
+  Implementation: `/home/daytona/workspace/source/helix-db/src/helix_engine/vector_core/vector_without_data.rs`
+</Info>
+
+## Best Practices
+
+<AccordionGroup>
+  <Accordion title="Choose appropriate HNSW parameters">
+    Start with defaults (m=16, ef_construction=200, ef_search=50) and tune based on your recall/speed requirements.
+  </Accordion>
+  
+  <Accordion title="Normalize vectors when using cosine distance">
+    Pre-normalize vectors before insertion for faster cosine similarity computation.
+  </Accordion>
+  
+  <Accordion title="Use batch operations for bulk insertion">
+    `BatchAddV` is significantly faster than multiple `AddV` calls for bulk imports.
+  </Accordion>
+  
+  <Accordion title="Index metadata fields for filtering">
+    Add `INDEX` to frequently filtered metadata fields to enable efficient post-search filtering.
+  </Accordion>
+  
+  <Accordion title="Consider embedding dimension">
+    Lower dimensions (256-384) are faster but less accurate. Higher dimensions (768-1536) are slower but more accurate.
+  </Accordion>
+</AccordionGroup>
+
+## Related
+
+<CardGroup cols={2}>
+  <Card title="Operations" icon="play" href="/api/operations">
+    AddV, BatchAddV, and SearchV operations
+  </Card>
+  <Card title="Functions" icon="function" href="/api/functions">
+    Reranking and fusion functions
+  </Card>
+  <Card title="Performance" icon="gauge-high" href="/advanced/performance">
+    HNSW tuning and optimization
+  </Card>
+  <Card title="Query Syntax" icon="code" href="/api/query-syntax">
+    Vector search in queries
+  </Card>
+</CardGroup>

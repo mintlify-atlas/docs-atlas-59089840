@@ -1,0 +1,310 @@
+---
+title: 'Node Definitions'
+description: 'N:: syntax and field types for defining node schemas in HelixDB'
+icon: 'circle-nodes'
+---
+
+## Overview
+
+Nodes represent entities in your graph. They are defined using the `N::` prefix followed by a type name and optional field definitions.
+
+## Syntax
+
+```hql
+N::<TypeName> {
+  [INDEX | UNIQUE INDEX] field_name: FieldType [DEFAULT value],
+  ...
+}
+```
+
+<ParamField path="TypeName" type="string" required>
+  The node type name. Must start with an uppercase letter and contain only alphanumeric characters and underscores.
+</ParamField>
+
+<ParamField path="fields" type="object">
+  Optional field definitions for the node type.
+</ParamField>
+
+## Field Types
+
+### Primitive Types
+
+<ParamField path="String" type="string">
+  UTF-8 encoded string values
+</ParamField>
+
+<ParamField path="Boolean" type="boolean">
+  True or false values
+</ParamField>
+
+### Integer Types
+
+<ParamField path="I8" type="integer">
+  Signed 8-bit integer (-128 to 127)
+</ParamField>
+
+<ParamField path="I16" type="integer">
+  Signed 16-bit integer (-32,768 to 32,767)
+</ParamField>
+
+<ParamField path="I32" type="integer">
+  Signed 32-bit integer (-2,147,483,648 to 2,147,483,647)
+</ParamField>
+
+<ParamField path="I64" type="integer">
+  Signed 64-bit integer (-9,223,372,036,854,775,808 to 9,223,372,036,854,775,807)
+</ParamField>
+
+<ParamField path="U8" type="integer">
+  Unsigned 8-bit integer (0 to 255)
+</ParamField>
+
+<ParamField path="U16" type="integer">
+  Unsigned 16-bit integer (0 to 65,535)
+</ParamField>
+
+<ParamField path="U32" type="integer">
+  Unsigned 32-bit integer (0 to 4,294,967,295)
+</ParamField>
+
+<ParamField path="U64" type="integer">
+  Unsigned 64-bit integer (0 to 18,446,744,073,709,551,615)
+</ParamField>
+
+<ParamField path="U128" type="integer">
+  Unsigned 128-bit integer (0 to 340,282,366,920,938,463,463,374,607,431,768,211,455)
+</ParamField>
+
+### Floating Point Types
+
+<ParamField path="F32" type="float">
+  32-bit floating point number (IEEE 754 single precision)
+</ParamField>
+
+<ParamField path="F64" type="float">
+  64-bit floating point number (IEEE 754 double precision)
+</ParamField>
+
+### Special Types
+
+<ParamField path="ID" type="uuid">
+  UUID identifier (128-bit unique identifier)
+</ParamField>
+
+<ParamField path="Date" type="datetime">
+  Date and time value. Accepts ISO 8601 strings or Unix timestamps.
+</ParamField>
+
+### Complex Types
+
+<ParamField path="[FieldType]" type="array">
+  Array of values of the specified type. Example: `[String]`, `[I32]`
+</ParamField>
+
+<ParamField path="{...}" type="object">
+  Nested object with field definitions
+  
+  ```hql
+  metadata: {
+    created: Date,
+    updated: Date
+  }
+  ```
+</ParamField>
+
+## Field Modifiers
+
+### INDEX
+
+Creates a secondary index on the field for faster lookups. Allows duplicate values.
+
+```hql
+N::User {
+  INDEX email: String,
+  name: String
+}
+```
+
+<Note>
+  Indexed fields create LMDB databases with `DUP_SORT` flag enabled for efficient duplicate key storage.
+  
+  Implementation: `/home/daytona/workspace/source/helix-db/src/helix_engine/storage_core/mod.rs:159-172`
+</Note>
+
+### UNIQUE INDEX
+
+Creates a unique index ensuring no duplicate values exist for this field.
+
+```hql
+N::User {
+  UNIQUE INDEX username: String,
+  email: String
+}
+```
+
+<Warning>
+  Attempts to insert duplicate values on UNIQUE INDEX fields will fail with a constraint violation error.
+</Warning>
+
+### DEFAULT
+
+Specifies a default value for the field if not provided during node creation.
+
+```hql
+N::Article {
+  title: String,
+  status: String DEFAULT "draft",
+  created_at: Date DEFAULT NOW,
+  likes: I32 DEFAULT 0
+}
+```
+
+<ParamField path="DEFAULT value" type="any">
+  Available default values:
+  - `NOW` - Current timestamp (for Date fields)
+  - Literal values: strings, numbers, booleans
+  - `NONE` - Explicit null value
+</ParamField>
+
+## Examples
+
+### Simple Node Definition
+
+```hql
+N::Person {
+  name: String,
+  age: I32
+}
+```
+
+### Node with Indexed Fields
+
+```hql
+N::User {
+  UNIQUE INDEX email: String,
+  INDEX role: String,
+  name: String,
+  created_at: Date DEFAULT NOW
+}
+```
+
+### Node with Complex Types
+
+```hql
+N::Product {
+  name: String,
+  price: F64,
+  tags: [String],
+  metadata: {
+    created: Date,
+    updated: Date,
+    version: I32
+  }
+}
+```
+
+### Node with All Features
+
+```hql
+N::BlogPost {
+  UNIQUE INDEX slug: String,
+  INDEX author_id: ID,
+  INDEX category: String,
+  title: String,
+  content: String,
+  published: Boolean DEFAULT false,
+  view_count: I64 DEFAULT 0,
+  tags: [String],
+  created_at: Date DEFAULT NOW,
+  updated_at: Date DEFAULT NOW
+}
+```
+
+## Storage Details
+
+Nodes are stored in LMDB using the following structure:
+
+- **Database**: `nodes`
+- **Key**: 128-bit UUID (`U128<BE>`)
+- **Value**: Bincode-serialized node data containing:
+  - `id`: u128
+  - `label`: &str (node type name)
+  - `version`: u16 (schema version)
+  - `properties`: Optional property map
+
+<Info>
+  Node storage is implemented in `/home/daytona/workspace/source/helix-db/src/helix_engine/storage_core/mod.rs:98-104`
+</Info>
+
+## Schema Versioning
+
+Node definitions support versioning for migrations:
+
+```hql
+schema::1 {
+  N::User {
+    name: String,
+    email: String
+  }
+}
+
+schema::2 {
+  N::User {
+    name: String,
+    email: String,
+    created_at: Date DEFAULT NOW
+  }
+}
+```
+
+See [Migrations](/advanced/migrations) for details on migrating between schema versions.
+
+## Type System
+
+HelixDB's type analyzer validates all field types at compile time:
+
+- Primitive types map to Rust native types
+- Arrays map to `Vec<T>`
+- Objects map to `HashMap<String, FieldType>`
+- Type compatibility is checked for all operations
+
+<Info>
+  Type definitions are in `/home/daytona/workspace/source/helix-db/src/helixc/parser/types.rs:214-234`
+</Info>
+
+## Best Practices
+
+<AccordionGroup>
+  <Accordion title="Choose appropriate integer types">
+    Use the smallest integer type that fits your data range. For example, use `U8` for status codes (0-255) rather than `I64`.
+  </Accordion>
+  
+  <Accordion title="Index frequently queried fields">
+    Add `INDEX` or `UNIQUE INDEX` to fields used in WHERE clauses or lookups to improve query performance.
+  </Accordion>
+  
+  <Accordion title="Use defaults for common values">
+    Set sensible defaults for fields like timestamps (`DEFAULT NOW`) or counters (`DEFAULT 0`).
+  </Accordion>
+  
+  <Accordion title="Prefer specific types over generic">
+    Use `Date` for timestamps rather than `I64`, and `ID` for UUIDs rather than `String`.
+  </Accordion>
+</AccordionGroup>
+
+## Related
+
+<CardGroup cols={2}>
+  <Card title="Edge Definitions" icon="link" href="/api/edge-definitions">
+    Define relationships between nodes
+  </Card>
+  <Card title="Query Syntax" icon="code" href="/api/query-syntax">
+    Query nodes with HelixQL
+  </Card>
+  <Card title="Data Types" icon="database" href="/api/data-types">
+    Complete type system reference
+  </Card>
+  <Card title="Operations" icon="play" href="/api/operations">
+    AddN operation for creating nodes
+  </Card>
+</CardGroup>

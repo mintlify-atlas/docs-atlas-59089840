@@ -1,0 +1,350 @@
+---
+title: helix build
+description: Build and compile a Helix project for deployment
+---
+
+The `helix build` command compiles your Helix queries into Rust code and builds a Docker image for your instance. This is typically called automatically by `helix push`, but can be run independently for validation or CI/CD pipelines.
+
+## Usage
+
+```bash
+helix build [OPTIONS]
+```
+
+## Options
+
+<ParamField path="--instance" type="string">
+  Instance name to build. If not provided, you'll be prompted to select from available instances.
+</ParamField>
+
+<ParamField path="--bin" type="string">
+  Build HelixDB into a binary at the specified directory location instead of creating a Docker image.
+</ParamField>
+
+## Build Process
+
+The build command performs these steps:
+
+<Steps>
+  <Step title="Repository sync">
+    Syncs or clones the HelixDB repository to the local cache.
+  </Step>
+
+  <Step title="Workspace preparation">
+    Prepares the instance workspace with required files.
+  </Step>
+
+  <Step title="Query compilation">
+    Compiles `.hx` files into Rust code and validates syntax.
+    
+    **Output:**
+    ```
+    ✓ Syncing repository
+    ✓ Compiling queries (5 queries)
+    ```
+  </Step>
+
+  <Step title="Docker image build">
+    Builds the Docker image with the compiled code (unless `--bin` is specified).
+    
+    **Output:**
+    ```
+    ✓ Building Docker image
+    ```
+  </Step>
+</Steps>
+
+## Examples
+
+### Build Default Instance
+
+Build with interactive selection:
+
+```bash
+helix build
+```
+
+**Interactive prompt:**
+```
+┌  helix build
+│
+◆  Select an instance to build:
+│  ● dev (Local)
+│  ○ staging (Helix Cloud)
+│  ○ production (Helix Cloud)
+```
+
+### Build Specific Instance
+
+Build a named instance:
+
+```bash
+helix build --instance dev
+```
+
+**Output:**
+```
+✓ Building dev
+  ✓ Syncing repository
+  ✓ Compiling queries (5 queries)
+  ✓ Building Docker image
+```
+
+### Build Binary Output
+
+Build as a standalone binary instead of a Docker image:
+
+```bash
+helix build --instance dev --bin ./target
+```
+
+This builds the Helix container as a native binary in the `./target` directory. Useful for:
+- Custom deployment workflows
+- CI/CD pipelines
+- Performance testing
+- Embedded deployments
+
+**Output:**
+```
+✓ Building dev
+  ✓ Syncing repository
+  ✓ Compiling queries (5 queries)
+  ✓ Building binary
+```
+
+### Build with Verbose Output
+
+See detailed build information:
+
+```bash
+helix build --instance dev --verbose
+```
+
+**Verbose output:**
+```
+✓ Building dev
+  ✓ Syncing repository
+    • Updating Helix repository cache...
+    • Copied cached repo to /home/user/.helix/dev/helix-repo-copy
+  ✓ Compiling queries (5 queries)
+    • Generating Rust code from Helix queries...
+    • Parsing Helix files...
+    • Analyzing Helix files...
+  ✓ Building Docker image
+    • Building helix-myproject-dev:latest
+```
+
+## Generated Artifacts
+
+The build process creates several artifacts in the `.helix/<instance>` directory:
+
+### Workspace Structure
+
+```
+.helix/
+└── dev/
+    ├── helix-container/
+    │   └── src/
+    │       ├── queries.rs       # Generated Rust code
+    │       └── config.hx.json   # Runtime configuration
+    ├── helix-repo-copy/         # HelixDB source
+    ├── Dockerfile               # Generated Dockerfile
+    └── docker-compose.yml       # Docker Compose config
+```
+
+### queries.rs
+
+Generated Rust code from your `.hx` files:
+
+```rust
+// Auto-generated from Helix queries
+// Do not edit directly
+
+pub fn get_user_friends(user_id: String) -> QueryResult {
+    // Generated traversal code
+}
+```
+
+### config.hx.json
+
+Runtime configuration in JSON format:
+
+```json
+{
+  "port": 6969,
+  "log_level": "info",
+  "db_path": "/data"
+}
+```
+
+## Compilation Errors
+
+If your queries have errors, the build will fail with detailed diagnostics:
+
+```
+✗ Building dev
+  ✓ Syncing repository
+  ✗ Compiling queries
+
+Compilation failed:
+
+Error in queries.hx:15:5
+  |
+15|     friends <- N<User>(user_id)::Out<Follow>
+  |                                      ^^^^^^
+  |
+  = Type 'Follow' is not defined in schema
+  = Hint: Did you mean 'Follows'?
+```
+
+### Common Errors
+
+<AccordionGroup>
+  <Accordion title="Undefined schema type">
+    ```
+    Type 'Follow' is not defined in schema
+    ```
+    
+    **Solution:** Check your schema.hx file and ensure all types are defined.
+  </Accordion>
+
+  <Accordion title="No schema definitions found">
+    ```
+    no schema definitions found in project
+    ```
+    
+    **Solution:** Add at least one schema definition like `N::User { name: String }` to your .hx files.
+  </Accordion>
+
+  <Accordion title="Docker not running">
+    ```
+    Docker is not running or not accessible
+    ```
+    
+    **Solution:** Start Docker Desktop or the Docker daemon.
+  </Accordion>
+
+  <Accordion title="Rust compilation error">
+    If generated Rust code fails to compile:
+    
+    ```
+    Rust compilation failed during Docker build
+    This may indicate a bug in the Helix code generator.
+    
+    Would you like to create a GitHub issue? (y/n)
+    ```
+    
+    The CLI can automatically create a GitHub issue with diagnostic information to help the Helix team fix the problem.
+  </Accordion>
+</AccordionGroup>
+
+## Build Modes
+
+For cloud instances, the build mode is configured in `helix.toml`:
+
+```toml
+[cloud.production]
+type = "helix"
+cluster_id = "cluster_abc123"
+build_mode = "release"  # or "dev"
+```
+
+### Development Mode
+
+- Faster compilation
+- Debug symbols included
+- Less optimization
+- Larger binary size
+
+```toml
+build_mode = "dev"
+```
+
+### Release Mode
+
+- Slower compilation
+- Full optimizations
+- Smaller binary size
+- Production-ready
+
+```toml
+build_mode = "release"
+```
+
+## Container Runtime
+
+Helix supports both Docker and Podman:
+
+```toml
+[project]
+container_runtime = "docker"  # or "podman"
+```
+
+The CLI automatically detects and uses the configured runtime.
+
+## CI/CD Integration
+
+Use `helix build` in your CI/CD pipelines:
+
+### GitHub Actions
+
+```yaml
+name: Build Helix
+
+on: [push]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      
+      - name: Install Helix CLI
+        run: curl -sSL https://install.helix-db.com | sh
+      
+      - name: Build project
+        run: helix build --instance production
+```
+
+### Binary Build for Deployment
+
+```yaml
+- name: Build binary
+  run: helix build --instance production --bin ./dist
+
+- name: Upload artifact
+  uses: actions/upload-artifact@v3
+  with:
+    name: helix-binary
+    path: ./dist
+```
+
+## Cache Management
+
+The Helix repository is cached at `~/.cache/helix-cli/helix-repo` for faster builds.
+
+**Clear the cache:**
+
+```bash
+rm -rf ~/.cache/helix-cli/helix-repo
+```
+
+The next build will re-download the repository.
+
+## Performance
+
+Build times vary by project size:
+
+- **Small projects** (< 10 queries): 30-60 seconds
+- **Medium projects** (10-50 queries): 1-2 minutes
+- **Large projects** (50+ queries): 2-5 minutes
+
+First builds are slower due to repository cloning and Docker layer caching.
+
+## Next Steps
+
+After building:
+
+- **Deploy locally:** `helix push dev`
+- **Deploy to cloud:** `helix push production`
+- **Validate generated code:** `helix check dev`

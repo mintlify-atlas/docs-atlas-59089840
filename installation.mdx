@@ -1,0 +1,422 @@
+---
+title: "Installation"
+description: "Complete guide to installing and configuring HelixDB"
+---
+
+This guide covers all installation methods for HelixDB, from local development to production deployments.
+
+## System Requirements
+
+Before installing HelixDB, ensure your system meets these requirements:
+
+### Minimum Requirements
+
+- **Operating System**: macOS, Linux, or Windows with WSL2
+- **RAM**: 4GB minimum (8GB recommended)
+- **Disk Space**: 2GB for CLI and dependencies
+- **Docker**: Version 20.10 or higher (for local instances)
+
+### Supported Platforms
+
+<CardGroup cols={3}>
+  <Card title="macOS" icon="apple">
+    macOS 11 (Big Sur) or later
+    
+    Intel and Apple Silicon
+  </Card>
+  <Card title="Linux" icon="linux">
+    Ubuntu 20.04+, Debian 11+, Fedora 35+
+    
+    x86_64 and ARM64
+  </Card>
+  <Card title="Windows" icon="windows">
+    Windows 10/11 with WSL2
+    
+    Ubuntu 20.04+ in WSL
+  </Card>
+</CardGroup>
+
+## Installing the Helix CLI
+
+The Helix CLI is your primary interface for managing HelixDB projects, instances, and deployments.
+
+### Quick Installation (Recommended)
+
+Install the Helix CLI using our installation script:
+
+```bash
+curl -sSL "https://install.helix-db.com" | bash
+```
+
+The script will:
+1. Download the latest Helix CLI binary for your platform
+2. Install it to `~/.helix/bin/helix`
+3. Add the binary to your PATH (you may need to restart your shell)
+
+### Verify Installation
+
+After installation, verify the CLI is working:
+
+```bash
+helix --version
+```
+
+You should see output like:
+
+```
+helix-cli 2.3.0
+```
+
+<Note>
+  If the `helix` command is not found, you may need to add `~/.helix/bin` to your PATH manually or restart your terminal.
+</Note>
+
+### Manual Installation
+
+If the installation script doesn't work for your system, you can manually install the CLI:
+
+<Steps>
+  <Step title="Download the binary">
+    Download the latest release for your platform from the [GitHub releases page](https://github.com/HelixDB/helix-db/releases).
+    
+    Choose the appropriate binary:
+    - `helix-cli-macos-x86_64` - macOS Intel
+    - `helix-cli-macos-aarch64` - macOS Apple Silicon
+    - `helix-cli-linux-x86_64` - Linux x86_64
+    - `helix-cli-linux-aarch64` - Linux ARM64
+  </Step>
+  
+  <Step title="Make it executable">
+    ```bash
+    chmod +x helix-cli-*
+    ```
+  </Step>
+  
+  <Step title="Move to PATH">
+    ```bash
+    sudo mv helix-cli-* /usr/local/bin/helix
+    ```
+  </Step>
+  
+  <Step title="Verify">
+    ```bash
+    helix --version
+    ```
+  </Step>
+</Steps>
+
+### Updating the CLI
+
+To update to the latest version:
+
+```bash
+helix update
+```
+
+This will download and install the latest version of the CLI.
+
+## Installing Docker (For Local Development)
+
+HelixDB local instances run in Docker containers. If you don't have Docker installed:
+
+<Tabs>
+  <Tab title="macOS">
+    1. Download [Docker Desktop for Mac](https://www.docker.com/products/docker-desktop)
+    2. Install and start Docker Desktop
+    3. Verify installation:
+    ```bash
+    docker --version
+    ```
+  </Tab>
+  
+  <Tab title="Linux">
+    Install Docker Engine:
+    
+    ```bash
+    # Ubuntu/Debian
+    curl -fsSL https://get.docker.com | sh
+    sudo usermod -aG docker $USER
+    newgrp docker
+    
+    # Verify
+    docker --version
+    ```
+    
+    See the [official Docker documentation](https://docs.docker.com/engine/install/) for other distributions.
+  </Tab>
+  
+  <Tab title="Windows">
+    1. Install [WSL2](https://docs.microsoft.com/en-us/windows/wsl/install)
+    2. Download [Docker Desktop for Windows](https://www.docker.com/products/docker-desktop)
+    3. Install and start Docker Desktop
+    4. Enable WSL2 integration in Docker Desktop settings
+    5. Verify in WSL terminal:
+    ```bash
+    docker --version
+    ```
+  </Tab>
+</Tabs>
+
+<Warning>
+  Ensure Docker is running before executing `helix push` commands. The CLI requires Docker to build and run local instances.
+</Warning>
+
+## Installing SDKs
+
+Install the official SDKs to interact with your HelixDB instances from your applications.
+
+### TypeScript/JavaScript SDK
+
+Install the TypeScript SDK using npm or yarn:
+
+<CodeGroup>
+```bash npm
+npm install helix-ts
+```
+
+```bash yarn
+yarn add helix-ts
+```
+
+```bash pnpm
+pnpm add helix-ts
+```
+</CodeGroup>
+
+Basic usage:
+
+```typescript
+import HelixDB from "helix-ts";
+
+const client = new HelixDB({
+  host: "localhost",
+  port: 6969,
+});
+
+const result = await client.query("getUser", {
+  user_name: "Alice",
+});
+```
+
+See the [TypeScript SDK documentation](/sdks/typescript) for more details.
+
+### Python SDK
+
+Install the Python SDK using pip:
+
+<CodeGroup>
+```bash pip
+pip install helix-py
+```
+
+```bash poetry
+poetry add helix-py
+```
+</CodeGroup>
+
+Basic usage:
+
+```python
+from helix_py import HelixDB
+
+client = HelixDB(
+    host="localhost",
+    port=6969
+)
+
+result = client.query("getUser", {
+    "user_name": "Alice"
+})
+```
+
+See the [Python SDK documentation](/sdks/python) for more details.
+
+## Configuration
+
+After installation, you can configure the CLI behavior.
+
+### CLI Configuration
+
+The CLI stores configuration in `~/.helix/config.toml`. You can edit this file to customize:
+
+```toml ~/.helix/config.toml
+# Telemetry settings
+[telemetry]
+enabled = true
+level = "minimal"
+
+# Default settings
+[defaults]
+port = 6969
+queries_path = "queries"
+```
+
+### Disable Telemetry
+
+To disable telemetry collection:
+
+```bash
+helix metrics off
+```
+
+To re-enable:
+
+```bash
+helix metrics on
+```
+
+<Note>
+  HelixDB collects minimal, anonymous usage data to help improve the product. No sensitive information or query data is collected.
+</Note>
+
+## Deployment Options
+
+HelixDB supports multiple deployment targets beyond local development.
+
+### Local Instance (Development)
+
+The default deployment option runs HelixDB in a local Docker container:
+
+```bash
+helix init
+helix push dev
+```
+
+This is ideal for:
+- Local development and testing
+- Prototyping
+- CI/CD pipelines
+
+### Helix Cloud (Managed)
+
+Deploy to Helix's managed cloud infrastructure:
+
+<Steps>
+  <Step title="Authenticate">
+    ```bash
+    helix auth login
+    ```
+  </Step>
+  
+  <Step title="Initialize with cloud deployment">
+    ```bash
+    helix init --deployment helix
+    ```
+  </Step>
+  
+  <Step title="Push to cloud">
+    ```bash
+    helix push production
+    ```
+  </Step>
+</Steps>
+
+See the [Cloud Deployment guide](/guides/cloud-deployment) for more details.
+
+### Fly.io
+
+Deploy to Fly.io for global edge deployment:
+
+```bash
+helix init --deployment fly --vm-size shared-cpu-1x
+helix push production
+```
+
+### AWS ECR
+
+Build and push Docker images to AWS ECR:
+
+```bash
+helix init --deployment ecr
+helix push production
+```
+
+<Tip>
+  For production deployments, see the [Cloud Deployment guide](/guides/cloud-deployment) for detailed instructions on each platform.
+</Tip>
+
+## Troubleshooting Installation
+
+<AccordionGroup>
+  <Accordion title="Installation script fails">
+    If the installation script fails, try:
+    
+    1. Check your internet connection
+    2. Ensure you have `curl` installed: `which curl`
+    3. Try manual installation instead
+    4. Check the [GitHub issues](https://github.com/HelixDB/helix-db/issues) for known problems
+  </Accordion>
+  
+  <Accordion title="Command not found after installation">
+    If `helix` command is not found after installation:
+    
+    1. Restart your terminal
+    2. Check if `~/.helix/bin` is in your PATH:
+       ```bash
+       echo $PATH | grep helix
+       ```
+    3. Manually add to PATH in your shell config:
+       ```bash
+       # For bash
+       echo 'export PATH="$HOME/.helix/bin:$PATH"' >> ~/.bashrc
+       source ~/.bashrc
+       
+       # For zsh
+       echo 'export PATH="$HOME/.helix/bin:$PATH"' >> ~/.zshrc
+       source ~/.zshrc
+       ```
+  </Accordion>
+  
+  <Accordion title="Docker permission denied">
+    If you get permission denied errors with Docker:
+    
+    **Linux:**
+    ```bash
+    sudo usermod -aG docker $USER
+    newgrp docker
+    ```
+    
+    **macOS/Windows:**
+    Ensure Docker Desktop is running and you're logged in.
+  </Accordion>
+  
+  <Accordion title="M1/M2 Mac compatibility issues">
+    On Apple Silicon Macs, ensure you're using the ARM64 build:
+    
+    1. Check your architecture: `uname -m` (should show `arm64`)
+    2. Use the `helix-cli-macos-aarch64` binary if installing manually
+    3. Ensure Docker Desktop is using Apple Silicon mode (not Rosetta)
+  </Accordion>
+  
+  <Accordion title="WSL2 installation issues">
+    On Windows with WSL2:
+    
+    1. Ensure WSL2 is installed and up to date: `wsl --update`
+    2. Install in the WSL2 environment, not Windows PowerShell
+    3. Enable WSL2 integration in Docker Desktop settings
+    4. Restart WSL2 after Docker Desktop installation
+  </Accordion>
+</AccordionGroup>
+
+## Next Steps
+
+Now that you have HelixDB installed:
+
+<CardGroup cols={2}>
+  <Card title="Quickstart" icon="rocket" href="/quickstart">
+    Build your first HelixDB application in 5 minutes
+  </Card>
+  <Card title="CLI Reference" icon="terminal" href="/cli/overview">
+    Explore all CLI commands and options
+  </Card>
+  <Card title="Local Deployment" icon="laptop" href="/guides/local-deployment">
+    Learn more about local development workflows
+  </Card>
+  <Card title="Cloud Deployment" icon="cloud" href="/guides/cloud-deployment">
+    Deploy to production on various platforms
+  </Card>
+</CardGroup>
+
+<Note>
+  Need help? Join our [Discord community](https://discord.gg/2stgMPr5BD) or check our [GitHub discussions](https://github.com/HelixDB/helix-db/discussions).
+</Note>

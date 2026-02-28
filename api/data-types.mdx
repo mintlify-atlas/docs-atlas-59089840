@@ -1,0 +1,667 @@
+---
+title: 'Data Types'
+description: 'Complete type system reference for HelixQL'
+icon: 'database'
+---
+
+## Overview
+
+HelixDB's type system provides strong compile-time type checking with support for primitive types, complex types, and graph-specific types.
+
+## Primitive Types
+
+### String Type
+
+<ParamField path="String" type="string">
+  UTF-8 encoded text
+  
+  **Storage**: Variable-length byte array
+  
+  **Range**: Limited by available memory
+  
+  **Example**:
+  ```hql
+  N::User {
+    name: String,
+    email: String,
+    bio: String
+  }
+  ```
+</ParamField>
+
+**Operations**:
+- Equality: `_.name::EQ("John")`
+- Inequality: `_.name::NEQ("Admin")`
+- Contains: `_.bio::CONTAINS("developer")`
+- In set: `_.role::IS_IN(["admin", "moderator"])`
+
+### Boolean Type
+
+<ParamField path="Boolean" type="boolean">
+  True or false values
+  
+  **Storage**: 1 byte
+  
+  **Values**: `true`, `false`
+  
+  **Example**:
+  ```hql
+  N::Post {
+    published: Boolean DEFAULT false,
+    featured: Boolean DEFAULT false,
+    archived: Boolean DEFAULT false
+  }
+  ```
+</ParamField>
+
+**Operations**:
+- Direct use in conditions: `_.published == true`
+- Logical: `AND(_.published, _.featured)`
+- Negation: `!_.archived`
+
+## Integer Types
+
+### Signed Integers
+
+<ParamField path="I8" type="integer">
+  **Range**: -128 to 127
+  
+  **Storage**: 1 byte
+  
+  **Use cases**: Small counters, status codes, flags
+  
+  ```hql
+  status_code: I8,  // HTTP status codes, etc.
+  priority: I8      // Priority levels -128 to 127
+  ```
+</ParamField>
+
+<ParamField path="I16" type="integer">
+  **Range**: -32,768 to 32,767
+  
+  **Storage**: 2 bytes
+  
+  **Use cases**: Year values, small measurements
+  
+  ```hql
+  year: I16,        // -32768 to 32767
+  temperature: I16  // Celsius * 100 for precision
+  ```
+</ParamField>
+
+<ParamField path="I32" type="integer">
+  **Range**: -2,147,483,648 to 2,147,483,647
+  
+  **Storage**: 4 bytes
+  
+  **Use cases**: General-purpose counters, IDs, quantities
+  
+  ```hql
+  view_count: I32,
+  likes: I32,
+  quantity: I32
+  ```
+</ParamField>
+
+<ParamField path="I64" type="integer">
+  **Range**: -9,223,372,036,854,775,808 to 9,223,372,036,854,775,807
+  
+  **Storage**: 8 bytes
+  
+  **Use cases**: Unix timestamps, large counters, high-precision IDs
+  
+  ```hql
+  timestamp_ms: I64,
+  total_revenue_cents: I64,
+  user_id_numeric: I64
+  ```
+</ParamField>
+
+### Unsigned Integers
+
+<ParamField path="U8" type="integer">
+  **Range**: 0 to 255
+  
+  **Storage**: 1 byte
+  
+  **Use cases**: Percentages, small positive values, byte data
+  
+  ```hql
+  completion_pct: U8,  // 0-100%
+  age: U8,             // 0-255 years
+  rgb_red: U8          // 0-255
+  ```
+</ParamField>
+
+<ParamField path="U16" type="integer">
+  **Range**: 0 to 65,535
+  
+  **Storage**: 2 bytes
+  
+  **Use cases**: Port numbers, small positive counters
+  
+  ```hql
+  port: U16,
+  page_count: U16,
+  product_code: U16
+  ```
+</ParamField>
+
+<ParamField path="U32" type="integer">
+  **Range**: 0 to 4,294,967,295
+  
+  **Storage**: 4 bytes
+  
+  **Use cases**: Large positive counters, hashes (truncated)
+  
+  ```hql
+  total_views: U32,
+  file_size_bytes: U32,
+  hash_32: U32
+  ```
+</ParamField>
+
+<ParamField path="U64" type="integer">
+  **Range**: 0 to 18,446,744,073,709,551,615
+  
+  **Storage**: 8 bytes
+  
+  **Use cases**: Very large counters, bit flags, numeric IDs
+  
+  ```hql
+  global_counter: U64,
+  bitmask: U64,
+  nanoseconds: U64
+  ```
+</ParamField>
+
+<ParamField path="U128" type="integer">
+  **Range**: 0 to 340,282,366,920,938,463,463,374,607,431,768,211,455
+  
+  **Storage**: 16 bytes
+  
+  **Use cases**: UUID storage (as number), cryptographic values
+  
+  ```hql
+  uuid_numeric: U128,
+  large_hash: U128
+  ```
+</ParamField>
+
+**Integer Operations**:
+- Comparison: `GT`, `GTE`, `LT`, `LTE`, `EQ`, `NEQ`
+- Arithmetic: `ADD`, `SUB`, `MUL`, `DIV`, `MOD`, `POW`
+- Aggregation: `MIN`, `MAX`, `SUM`, `AVG`, `COUNT`
+
+## Floating Point Types
+
+<ParamField path="F32" type="float">
+  **Precision**: ~6-9 decimal digits
+  
+  **Storage**: 4 bytes (IEEE 754 single precision)
+  
+  **Range**: ±3.4 × 10^38
+  
+  **Use cases**: Coordinates, non-critical measurements, space-constrained scenarios
+  
+  ```hql
+  latitude: F32,
+  longitude: F32,
+  temperature: F32
+  ```
+</ParamField>
+
+<ParamField path="F64" type="float">
+  **Precision**: ~15-17 decimal digits
+  
+  **Storage**: 8 bytes (IEEE 754 double precision)
+  
+  **Range**: ±1.7 × 10^308
+  
+  **Use cases**: Financial calculations, scientific data, high-precision measurements
+  
+  ```hql
+  price: F64,
+  distance_meters: F64,
+  scientific_measurement: F64
+  ```
+</ParamField>
+
+<Warning>
+  Use F64 for financial calculations to avoid precision loss. Never use F32 for money.
+</Warning>
+
+**Float Operations**:
+- All integer operations plus:
+- Math functions: `SQRT`, `POW`, `LN`, `LOG`, `EXP`
+- Trigonometry: `SIN`, `COS`, `TAN`, `ASIN`, `ACOS`, `ATAN`
+- Rounding: `CEIL`, `FLOOR`, `ROUND`
+
+## Special Types
+
+### ID Type (UUID)
+
+<ParamField path="ID" type="uuid">
+  Universally Unique Identifier
+  
+  **Storage**: 16 bytes (128-bit)
+  
+  **Format**: UUID v6 (time-ordered) by default
+  
+  **Example**:
+  ```hql
+  N::User {
+    external_id: ID,
+    organization_id: ID
+  }
+  ```
+</ParamField>
+
+**Properties**:
+- Time-ordered (UUID v6) for better database performance
+- Globally unique across all nodes
+- Can be used as primary or foreign keys
+
+**Usage**:
+```hql
+// Auto-generated for all entities
+user_id <- AddN<User>({name: "Alice"})::_.id
+
+// Manual UUID fields
+N::Document {
+  external_system_id: ID
+}
+```
+
+<Info>
+  UUID generation uses v6 specification for time-ordered IDs:
+  `/home/daytona/workspace/source/helix-db/src/utils/id.rs`
+</Info>
+
+### Date Type
+
+<ParamField path="Date" type="datetime">
+  Date and time with timezone support
+  
+  **Storage**: Varies by representation
+  
+  **Accepts**:
+  - ISO 8601 strings: `"2024-02-28T12:00:00Z"`
+  - Unix timestamps (I64): seconds since epoch
+  - `NOW` keyword for current time
+  
+  **Example**:
+  ```hql
+  N::Event {
+    created_at: Date DEFAULT NOW,
+    starts_at: Date,
+    ends_at: Date
+  }
+  ```
+</ParamField>
+
+**Operations**:
+```hql
+// Set to current time
+created_at: NOW
+
+// Compare dates
+_.created_at > "2024-01-01T00:00:00Z"
+
+// Date arithmetic with timestamps
+recent_posts <- N<Post>::WHERE(
+  _.created_at > SUB(NOW, 86400)  // Last 24 hours
+)
+```
+
+<Info>
+  Date type parsing and validation:
+  `/home/daytona/workspace/source/helix-db/src/helixc/parser/types.rs:341-348`
+</Info>
+
+## Complex Types
+
+### Array Type
+
+<ParamField path="[Type]" type="array">
+  Ordered collection of values of the same type
+  
+  **Syntax**: `[ElementType]`
+  
+  **Storage**: Variable-length
+  
+  **Example**:
+  ```hql
+  N::Article {
+    tags: [String],
+    coauthor_ids: [ID],
+    view_counts_by_day: [I32],
+    coordinates: [F64]
+  }
+  ```
+</ParamField>
+
+**Nested Arrays**:
+```hql
+N::Matrix {
+  data: [[F64]],  // 2D array
+  labels: [[String]]  // 2D string array
+}
+```
+
+**Operations**:
+```hql
+// Check membership
+_.tags::CONTAINS("technology")
+
+// Check if field is in array
+_.category::IS_IN(["tech", "science", "math"])
+
+// Literal arrays in queries
+array_data <- [1, 2, 3, 4, 5]
+categories <- ["tech", "science"]
+```
+
+### Object Type
+
+<ParamField path="{...}" type="object">
+  Nested structure with named fields
+  
+  **Syntax**: `{field1: Type1, field2: Type2, ...}`
+  
+  **Storage**: Nested serialization
+  
+  **Example**:
+  ```hql
+  N::User {
+    profile: {
+      bio: String,
+      avatar_url: String,
+      social_links: [String]
+    },
+    settings: {
+      notifications: Boolean,
+      theme: String,
+      language: String
+    },
+    metadata: {
+      created_at: Date,
+      updated_at: Date,
+      version: I32
+    }
+  }
+  ```
+</ParamField>
+
+**Accessing Nested Fields**:
+```hql
+// Object access in queries
+user.profile.bio
+user.settings.theme
+
+// Object destructuring in FOR loops
+FOR {name, email} IN users {
+  AddN<User>({name: name, email: email})
+}
+
+// Object field access
+FOR user.metadata IN users {
+  // Use metadata.version, metadata.created_at
+}
+```
+
+**Nested Objects**:
+```hql
+N::Product {
+  details: {
+    specs: {
+      weight: F64,
+      dimensions: {
+        width: F64,
+        height: F64,
+        depth: F64
+      }
+    }
+  }
+}
+```
+
+## Type System Implementation
+
+### FieldType Enum
+
+Internal representation of types:
+
+```rust
+pub enum FieldType {
+    String,
+    F32,
+    F64,
+    I8,
+    I16,
+    I32,
+    I64,
+    U8,
+    U16,
+    U32,
+    U64,
+    U128,
+    Boolean,
+    Uuid,
+    Date,
+    Array(Box<FieldType>),
+    Object(HashMap<String, FieldType>),
+    Identifier(String),  // Custom types
+}
+```
+
+<Info>
+  Type definitions: `/home/daytona/workspace/source/helix-db/src/helixc/parser/types.rs:214-234`
+</Info>
+
+### Type Compatibility
+
+Type compatibility rules:
+
+```rust
+impl PartialEq for FieldType {
+    fn eq(&self, other: &Self) -> bool {
+        // F32 and F64 are compatible
+        (FieldType::F32 | FieldType::F64, 
+         FieldType::F32 | FieldType::F64) => true,
+        
+        // All integer types are compatible
+        (FieldType::I8 | I16 | I32 | I64 | U8 | U16 | U32 | U64 | U128,
+         FieldType::I8 | I16 | I32 | I64 | U8 | U16 | U32 | U64 | U128) => true,
+         
+        // Exact match for others
+        _ => // ... exact type match
+    }
+}
+```
+
+<Info>
+  Type compatibility: `/home/daytona/workspace/source/helix-db/src/helixc/parser/types.rs:236-272`
+</Info>
+
+### Type Inference
+
+The analyzer infers types during compilation:
+
+```rust
+pub enum Type {
+    Node(Option<String>),
+    Nodes(Option<String>),
+    Edge(Option<String>),
+    Edges(Option<String>),
+    Vector(Option<String>),
+    Vectors(Option<String>),
+    Scalar(FieldType),
+    Object(HashMap<String, Type>),
+    Array(Box<Type>),
+    Count,
+    Boolean,
+    Unknown,
+}
+```
+
+<Info>
+  Type inference: `/home/daytona/workspace/source/helix-db/src/helixc/analyzer/types.rs:249-264`
+</Info>
+
+## Type Conversion
+
+Automatic type conversions:
+
+<AccordionGroup>
+  <Accordion title="Integer Type Widening">
+    Smaller integer types automatically widen to larger ones:
+    ```hql
+    i8_value: I8 = 10
+    i64_value: I64 = i8_value  // Automatic widening
+    ```
+  </Accordion>
+  
+  <Accordion title="Float Compatibility">
+    F32 and F64 are generally compatible:
+    ```hql
+    f32_value: F32 = 3.14
+    f64_value: F64 = f32_value  // Automatic conversion
+    ```
+  </Accordion>
+  
+  <Accordion title="String to Date">
+    ISO 8601 strings convert to Date:
+    ```hql
+    created_at: Date = "2024-02-28T12:00:00Z"
+    ```
+  </Accordion>
+  
+  <Accordion title="Integer to Date">
+    Unix timestamps convert to Date:
+    ```hql
+    created_at: Date = 1709121600  // Seconds since epoch
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## Default Values by Type
+
+<ParamField path="String" default='""'>
+  Empty string if no DEFAULT specified and field is optional
+</ParamField>
+
+<ParamField path="Integer types" default="0">
+  Zero for all integer types
+</ParamField>
+
+<ParamField path="Float types" default="0.0">
+  Zero for F32 and F64
+</ParamField>
+
+<ParamField path="Boolean" default="false">
+  False if not specified
+</ParamField>
+
+<ParamField path="Date" default="NOW">
+  Current timestamp when using `DEFAULT NOW`
+</ParamField>
+
+<ParamField path="Array" default="[]">
+  Empty array
+</ParamField>
+
+<ParamField path="Object" default="{}">
+  Empty object
+</ParamField>
+
+## Type Best Practices
+
+<AccordionGroup>
+  <Accordion title="Choose the smallest type that fits">
+    Use U8 for 0-255 ranges, not U64:
+    ```hql
+    age: U8,           // Good: 0-255
+    age: U64,          // Bad: Wastes space
+    ```
+  </Accordion>
+  
+  <Accordion title="Use ID for UUIDs">
+    Don't store UUIDs as strings:
+    ```hql
+    user_id: ID,       // Good: 16 bytes
+    user_id: String,   // Bad: 36 bytes as string
+    ```
+  </Accordion>
+  
+  <Accordion title="Use Date for timestamps">
+    Don't use I64 for timestamps:
+    ```hql
+    created_at: Date DEFAULT NOW,  // Good: Typed date
+    created_at: I64,                // Bad: Raw timestamp
+    ```
+  </Accordion>
+  
+  <Accordion title="Use F64 for money">
+    Store money in smallest unit (cents) or use F64:
+    ```hql
+    price_usd_cents: I64,  // Good: No precision loss
+    price_usd: F64,         // Good: High precision
+    price_usd: F32,         // Bad: Precision loss
+    ```
+  </Accordion>
+  
+  <Accordion title="Use arrays for homogeneous lists">
+    Arrays should contain same-typed elements:
+    ```hql
+    tags: [String],     // Good: Homogeneous
+    mixed: [???],       // Bad: Use object instead
+    ```
+  </Accordion>
+  
+  <Accordion title="Use objects for structured data">
+    Group related fields in objects:
+    ```hql
+    // Good: Structured
+    address: {
+      street: String,
+      city: String,
+      zip: String
+    }
+    
+    // Bad: Flat structure
+    address_street: String,
+    address_city: String,
+    address_zip: String
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## Type Validation
+
+Types are validated at:
+
+1. **Schema definition time**: When parsing schema definitions
+2. **Compile time**: During query compilation and analysis
+3. **Runtime**: When inserting/updating data
+
+<Warning>
+  Type mismatches will cause compilation errors, not runtime errors, ensuring type safety.
+</Warning>
+
+## Related
+
+<CardGroup cols={2}>
+  <Card title="Node Definitions" icon="circle-nodes" href="/api/node-definitions">
+    Using types in node schemas
+  </Card>
+  <Card title="Edge Definitions" icon="link" href="/api/edge-definitions">
+    Using types in edge properties
+  </Card>
+  <Card title="Query Syntax" icon="code" href="/api/query-syntax">
+    Type usage in queries
+  </Card>
+  <Card title="Functions" icon="function" href="/api/functions">
+    Type-specific functions
+  </Card>
+</CardGroup>

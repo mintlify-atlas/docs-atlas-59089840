@@ -1,0 +1,518 @@
+---
+title: 'Vector Operations'
+description: 'Work with embeddings and semantic search in HelixQL'
+---
+
+## Vector Basics
+
+Vectors in HelixQL represent embeddings for semantic search and similarity operations. They enable you to find similar content based on meaning rather than exact matches.
+
+## Vector Schema
+
+Define vector types in your schema:
+
+```hql
+V::Document {
+    content: String,
+    created_at: I64,
+    metadata: String
+}
+```
+
+<ParamField path="V::" type="keyword">
+  Declares a vector type for embeddings
+</ParamField>
+
+### Vector with Explicit Dimensions
+
+```hql
+V::Embedding {
+    vector: [F64],
+    text: String,
+    source: String
+}
+```
+
+## Creating Vectors
+
+### AddV with Embed Function
+
+Generate embeddings from text automatically:
+
+```hql
+QUERY CreateDocument(text: String) =>
+    doc <- AddV<Document>(Embed(text), {content: text})
+    RETURN doc
+```
+
+<ParamField path="Embed()" type="function">
+  Automatically generates embeddings from text using configured model
+</ParamField>
+
+### AddV with Vector Literal
+
+Provide pre-computed embeddings:
+
+```hql
+QUERY CreateDocumentWithVector(vec: [F64], text: String) =>
+    doc <- AddV<Document>(vec, {content: text})
+    RETURN doc
+```
+
+### AddV with Vector Array Literal
+
+Direct vector specification:
+
+```hql
+QUERY CreateEmbedding() =>
+    doc <- AddV<Document>(
+        [0.1, 0.2, 0.3, 0.4, 0.5],
+        {content: "example"}
+    )
+    RETURN doc
+```
+
+## Batch Vector Operations
+
+### BatchAddV
+
+Add multiple vectors efficiently:
+
+```hql
+QUERY BatchCreateDocuments(documents: [{text: String}]) =>
+    vectors <- BatchAddV<Document>(documents)
+    RETURN vectors
+```
+
+<ParamField path="BatchAddV<Type>" type="operation">
+  Efficiently creates multiple vectors in a single operation
+</ParamField>
+
+## Vector Search
+
+### SearchV - Semantic Search
+
+Find similar vectors using semantic similarity:
+
+<CodeGroup>
+
+```hql Search with Embed
+QUERY SearchDocuments(query: String, limit: I64) =>
+    results <- SearchV<Document>(Embed(query), limit)
+    RETURN results
+```
+
+```hql Search with Vector
+QUERY SearchSimilar(vec: [F64], k: I64) =>
+    results <- SearchV<Document>(vec, k)
+    RETURN results
+```
+
+```hql Search with Variable
+QUERY SearchByExample(docId: ID, limit: I64) =>
+    example <- V<Document>(docId)
+    similar <- SearchV<Document>(example, limit)
+    RETURN similar
+```
+
+</CodeGroup>
+
+<ParamField path="SearchV<Type>" type="operation">
+  Performs vector similarity search (cosine similarity by default)
+</ParamField>
+
+<ParamField path="vector_data" type="parameter">
+  Can be: Embed(text), [F64] array, or identifier
+</ParamField>
+
+<ParamField path="k" type="parameter">
+  Number of results to return (top-k)
+</ParamField>
+
+## BM25 Search
+
+BM25 is a keyword-based ranking function for full-text search:
+
+```hql
+QUERY SearchText(query: String, limit: I32) =>
+    results <- SearchBM25<Document>(query, limit)
+    RETURN results
+```
+
+<ParamField path="SearchBM25<Type>" type="operation">
+  Performs BM25 keyword search on text fields
+</ParamField>
+
+<ParamField path="query" type="string">
+  Text query for keyword matching
+</ParamField>
+
+<ParamField path="k" type="integer">
+  Number of results to return
+</ParamField>
+
+## Reranking
+
+Reranking refines search results for better relevance:
+
+### RerankRRF (Reciprocal Rank Fusion)
+
+Combines multiple ranking signals:
+
+<CodeGroup>
+
+```hql Default RRF
+QUERY SearchWithRRF(query: String) =>
+    results <- SearchV<Document>(Embed(query), 100)
+        ::RerankRRF
+        ::RANGE(0, 10)
+    RETURN results
+```
+
+```hql RRF with Custom K
+QUERY SearchWithCustomRRF(query: String, k: F64) =>
+    results <- SearchV<Document>(Embed(query), 100)
+        ::RerankRRF(k: k)
+        ::RANGE(0, 10)
+    RETURN results
+```
+
+</CodeGroup>
+
+<ParamField path="RerankRRF" type="reranker">
+  Reciprocal Rank Fusion for combining rankings
+</ParamField>
+
+<ParamField path="k" type="optional">
+  RRF parameter (default: 60). Higher values reduce rank differences
+</ParamField>
+
+### RerankMMR (Maximal Marginal Relevance)
+
+Balance relevance with diversity:
+
+<CodeGroup>
+
+```hql MMR Default (Cosine)
+QUERY SearchWithMMR(query: String) =>
+    results <- SearchV<Document>(Embed(query), 100)
+        ::RerankMMR(lambda: 0.7)
+        ::RANGE(0, 10)
+    RETURN results
+```
+
+```hql MMR Euclidean
+QUERY SearchMMREuclidean(query: String) =>
+    results <- SearchV<Document>(Embed(query), 100)
+        ::RerankMMR(lambda: 0.5, distance: "euclidean")
+        ::RANGE(0, 10)
+    RETURN results
+```
+
+```hql MMR Dot Product
+QUERY SearchMMRDot(query: String) =>
+    results <- SearchV<Document>(Embed(query), 100)
+        ::RerankMMR(lambda: 0.6, distance: "dotproduct")
+        ::RANGE(0, 10)
+    RETURN results
+```
+
+</CodeGroup>
+
+<ParamField path="RerankMMR" type="reranker">
+  Maximal Marginal Relevance for diversity
+</ParamField>
+
+<ParamField path="lambda" type="required">
+  Trade-off between relevance (1.0) and diversity (0.0). Range: 0.0 to 1.0
+</ParamField>
+
+<ParamField path="distance" type="optional">
+  Distance metric: "cosine" (default), "euclidean", or "dotproduct"
+</ParamField>
+
+### Chained Rerankers
+
+Combine multiple reranking strategies:
+
+```hql
+QUERY SearchWithChainedReranking(query: String) =>
+    results <- SearchV<Document>(Embed(query), 100)
+        ::RerankRRF(k: 60)
+        ::RerankMMR(lambda: 0.7)
+        ::RANGE(0, 10)
+    RETURN results
+```
+
+## Vector Traversals
+
+### FromV - Get Source Vector
+
+```hql
+QUERY GetSourceVector(edgeId: ID) =>
+    vector <- E<EmbeddingOf>(edgeId)::FromV
+    RETURN vector
+```
+
+<ParamField path="FromV" type="traversal">
+  Gets the source vector of an edge
+</ParamField>
+
+### ToV - Get Destination Vector
+
+```hql
+QUERY GetDestVector(edgeId: ID) =>
+    vector <- E<EmbeddingOf>(edgeId)::ToV
+    RETURN vector
+```
+
+<ParamField path="ToV" type="traversal">
+  Gets the destination vector of an edge
+</ParamField>
+
+## Vector Upserting
+
+### UpsertV
+
+Update existing vector or create new one:
+
+<CodeGroup>
+
+```hql Upsert with Embed
+QUERY UpsertDocument(text: String) =>
+    existing <- V<Document>::WHERE(_::{content}::EQ(text))
+    doc <- existing::UpsertV(Embed(text), {content: text})
+    RETURN doc
+```
+
+```hql Upsert with Vector
+QUERY UpsertDocVector(vec: [F64], content: String) =>
+    existing <- V<Document>::WHERE(_::{content}::EQ(content))
+    doc <- existing::UpsertV(vec, {content: content})
+    RETURN doc
+```
+
+</CodeGroup>
+
+<ParamField path="UpsertV" type="operation">
+  Updates vector if exists, creates if not
+</ParamField>
+
+## Filtering Vector Results
+
+### WHERE with Vector Search
+
+Filter search results:
+
+```hql
+QUERY SearchFilteredDocuments(query: String, minDate: I64) =>
+    results <- SearchV<Document>(Embed(query), 100)
+        ::WHERE(_::{created_at}::GTE(minDate))
+        ::RANGE(0, 10)
+    RETURN results
+```
+
+### Prefiltering (Future)
+
+Filter before vector search for better performance:
+
+```hql
+// Coming soon
+QUERY SearchWithPrefilter(query: String) =>
+    results <- SearchV<Document>(Embed(query), 100)
+        ::PREFILTER(_::{published}::EQ(true))
+    RETURN results
+```
+
+## Complete Examples
+
+### Semantic Document Search
+
+```hql
+schema::1 {
+    V::Document {
+        content: String,
+        title: String,
+        author: String,
+        published_at: I64,
+        category: String
+    }
+}
+
+QUERY AddDocument(title: String, content: String, author: String) =>
+    doc <- AddV<Document>(
+        Embed(content),
+        {
+            title: title,
+            content: content,
+            author: author,
+            published_at: 1704067200
+        }
+    )
+    RETURN doc
+
+QUERY SearchDocuments(query: String, limit: I64) =>
+    results <- SearchV<Document>(Embed(query), limit)
+        ::RerankMMR(lambda: 0.7)
+        ::RANGE(0, 10)
+    RETURN results::{title, content, author}
+
+QUERY SearchByCategory(query: String, category: String) =>
+    results <- SearchV<Document>(Embed(query), 100)
+        ::WHERE(_::{category}::EQ(category))
+        ::RerankRRF
+        ::RANGE(0, 10)
+    RETURN results
+```
+
+### Hybrid Search (Vector + BM25)
+
+```hql
+QUERY HybridSearch(query: String, limit: I64) =>
+    // Vector search
+    vectorResults <- SearchV<Document>(Embed(query), 50)
+    
+    // Keyword search
+    bm25Results <- SearchBM25<Document>(query, 50)
+    
+    // Combine with RRF
+    combined <- vectorResults
+        ::RerankRRF(k: 60)
+    
+    final <- combined::RANGE(0, limit)
+    
+    RETURN final::{title, content}
+```
+
+### RAG Pipeline
+
+```hql
+schema::1 {
+    V::Chunk {
+        content: String,
+        document_id: ID,
+        chunk_index: I32
+    }
+    
+    N::Document {
+        title: String,
+        url: String
+    }
+    
+    E::ChunkOf {
+        From: Chunk,
+        To: Document,
+    }
+}
+
+QUERY AddDocumentWithChunks(
+    title: String,
+    url: String,
+    chunks: [{content: String}]
+) =>
+    doc <- AddN<Document>({title: title, url: url})
+    
+    FOR chunk IN chunks {
+        vector <- AddV<Chunk>(
+            Embed(chunk.content),
+            {content: chunk.content, document_id: doc}
+        )
+        AddE<ChunkOf>::From(vector)::To(doc)
+    }
+    
+    RETURN doc
+
+QUERY RetrieveContext(query: String, limit: I64) =>
+    // Find relevant chunks
+    chunks <- SearchV<Chunk>(Embed(query), limit)
+        ::RerankMMR(lambda: 0.7)
+    
+    // Get source documents
+    documents <- chunks
+        ::OutE<ChunkOf>
+        ::ToN
+    
+    RETURN {
+        chunks: chunks::{content},
+        sources: documents::{title, url}
+    }
+```
+
+### Similar Items Recommendation
+
+```hql
+schema::1 {
+    V::Product {
+        name: String,
+        description: String,
+        category: String,
+        price: F32
+    }
+}
+
+QUERY FindSimilarProducts(productId: ID, limit: I64) =>
+    // Get the product vector
+    product <- V<Product>(productId)
+    
+    // Find similar products
+    similar <- SearchV<Product>(product, limit)
+        ::WHERE(_::ID::NEQ(productId))  // Exclude self
+        ::RerankMMR(lambda: 0.5)        // Diversify results
+    
+    RETURN similar::{name, description, price}
+
+QUERY SearchProducts(query: String, category?: String, maxPrice?: F32) =>
+    results <- SearchV<Product>(Embed(query), 100)
+    
+    // Apply filters
+    filtered <- results::WHERE(
+        AND(
+            category ? _::{category}::EQ(category) : true,
+            maxPrice ? _::{price}::LTE(maxPrice) : true
+        )
+    )
+    
+    // Rerank and limit
+    final <- filtered
+        ::RerankRRF
+        ::RANGE(0, 20)
+    
+    RETURN final
+```
+
+## Distance Metrics
+
+HelixQL supports multiple distance metrics:
+
+<ParamField path="cosine" type="default">
+  Cosine similarity - measures angle between vectors (default for SearchV)
+</ParamField>
+
+<ParamField path="euclidean" type="metric">
+  Euclidean distance - measures straight-line distance
+</ParamField>
+
+<ParamField path="dotproduct" type="metric">
+  Dot product - measures magnitude and direction alignment
+</ParamField>
+
+## Best Practices
+
+1. **Use Embed() for consistency**: Let HelixDB handle embedding generation
+2. **Rerank large result sets**: SearchV with 100+ results, then rerank to top 10
+3. **Balance relevance vs diversity**: Use lambda ~0.7 for relevance, ~0.3 for diversity
+4. **Filter after search**: Apply WHERE filters after vector search for better performance
+5. **Batch operations**: Use BatchAddV for multiple vectors
+6. **Hybrid search**: Combine vector and keyword search with RerankRRF
+7. **UpsertV for updates**: Use UpsertV to update existing vectors instead of delete+add
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Schema Definitions" icon="sitemap" href="/hql/schema">
+    Learn more about vector schema definitions
+  </Card>
+  <Card title="Graph Traversals" icon="diagram-project" href="/hql/traversals">
+    Combine vectors with graph traversals
+  </Card>
+</CardGroup>

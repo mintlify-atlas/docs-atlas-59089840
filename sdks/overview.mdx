@@ -1,0 +1,179 @@
+---
+title: 'SDK Overview'
+description: 'Connect to HelixDB using official TypeScript and Python SDKs'
+---
+
+## Overview
+
+HelixDB provides official SDKs for TypeScript and Python that make it easy to connect to your HelixDB instance and execute queries. The SDKs provide a simple, type-safe interface for interacting with your deployed HelixQL queries.
+
+## Available SDKs
+
+<CardGroup cols={2}>
+  <Card title="TypeScript SDK" icon="js" href="/sdks/typescript">
+    Official TypeScript/JavaScript SDK for Node.js and browser environments
+  </Card>
+  <Card title="Python SDK" icon="python" href="/sdks/python">
+    Official Python SDK for Python 3.8+
+  </Card>
+</CardGroup>
+
+## Installation
+
+<CodeGroup>
+
+```bash npm
+npm install helix-ts
+```
+
+```bash yarn
+yarn add helix-ts
+```
+
+```bash pnpm
+pnpm add helix-ts
+```
+
+```bash pip
+pip install helix-py
+```
+
+```bash poetry
+poetry add helix-py
+```
+
+</CodeGroup>
+
+## Client Connection
+
+Both SDKs follow a similar pattern for connecting to HelixDB:
+
+<Tabs>
+  <Tab title="TypeScript">
+    ```typescript
+    import HelixDB from "helix-ts";
+
+    // Connect to local HelixDB instance (default: localhost:6969)
+    const client = new HelixDB();
+
+    // Connect to a custom host and port
+    const client = new HelixDB({
+      host: "your-helix-instance.com",
+      port: 6969,
+    });
+    ```
+  </Tab>
+  <Tab title="Python">
+    ```python
+    from helix_py import HelixDB
+
+    # Connect to local HelixDB instance (default: localhost:6969)
+    client = HelixDB()
+
+    # Connect to a custom host and port
+    client = HelixDB(
+        host="your-helix-instance.com",
+        port=6969
+    )
+    ```
+  </Tab>
+</Tabs>
+
+## Executing Queries
+
+Once you've deployed your HelixQL queries using `helix push`, you can execute them through the SDK using the `query()` method:
+
+<Tabs>
+  <Tab title="TypeScript">
+    ```typescript
+    // Execute a query with parameters
+    const result = await client.query("getUser", {
+      user_name: "John",
+    });
+
+    console.log(result);
+    ```
+  </Tab>
+  <Tab title="Python">
+    ```python
+    # Execute a query with parameters
+    result = client.query("getUser", {
+        "user_name": "John"
+    })
+
+    print(result)
+    ```
+  </Tab>
+</Tabs>
+
+## Query Parameters
+
+Query parameters must match the types defined in your HelixQL query definitions. The SDKs will automatically serialize your data to the correct format.
+
+### Supported Types
+
+| HelixQL Type | TypeScript Type | Python Type |
+|--------------|-----------------|-------------|
+| `String` | `string` | `str` |
+| `I32`, `I64` | `number` | `int` |
+| `U32`, `U64` | `number` | `int` |
+| `F32`, `F64` | `number` | `float` |
+| `Bool` | `boolean` | `bool` |
+| `ID` | `string` | `str` |
+
+## Error Handling
+
+Both SDKs throw errors when queries fail. Always wrap your query calls in try-catch blocks:
+
+<Tabs>
+  <Tab title="TypeScript">
+    ```typescript
+    try {
+      const result = await client.query("getUser", {
+        user_name: "John",
+      });
+      console.log(result);
+    } catch (error) {
+      console.error("Query failed:", error);
+    }
+    ```
+  </Tab>
+  <Tab title="Python">
+    ```python
+    try:
+        result = client.query("getUser", {
+            "user_name": "John"
+        })
+        print(result)
+    except Exception as error:
+        print(f"Query failed: {error}")
+    ```
+  </Tab>
+</Tabs>
+
+## Default Port
+
+HelixDB runs on port **6969** by default. Make sure your HelixDB instance is running and accessible before executing queries.
+
+You can check if your instance is running using:
+
+```bash
+helix status
+```
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="TypeScript SDK" icon="js" href="/sdks/typescript">
+    Learn more about TypeScript-specific features and examples
+  </Card>
+  <Card title="Python SDK" icon="python" href="/sdks/python">
+    Learn more about Python-specific features and examples
+  </Card>
+</CardGroup>
+
+## Resources
+
+- [HelixDB TypeScript SDK on GitHub](https://github.com/HelixDB/helix-ts)
+- [HelixDB Python SDK on GitHub](https://github.com/HelixDB/helix-py)
+- [HelixQL Query Language](/documentation/hql/hql)

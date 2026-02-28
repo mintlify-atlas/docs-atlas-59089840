@@ -1,0 +1,314 @@
+---
+title: 'Schema Definitions'
+description: 'Define nodes, edges, and vectors in HelixQL'
+---
+
+## Schema Syntax
+
+HelixQL schemas define the structure of your graph database using three entity types: Nodes (`N::`), Edges (`E::`), and Vectors (`V::`).
+
+### Schema Versioning
+
+Schemas can be versioned for migration support:
+
+```hql
+schema::1 {
+    N::User {
+        name: String,
+        age: I32
+    }
+}
+```
+
+Or define entities directly without versioning:
+
+```hql
+N::User {
+    name: String,
+    age: I32
+}
+```
+
+## Node Definitions
+
+Nodes represent entities in your graph:
+
+<ParamField path="N::TypeName" type="node">
+  Node type name must start with an uppercase letter
+</ParamField>
+
+### Basic Node
+
+```hql
+N::User {
+    name: String,
+    age: I32,
+    email: String
+}
+```
+
+### Node with Index
+
+Indexes improve query performance for specific fields:
+
+```hql
+N::User {
+    INDEX name: String,
+    age: I32,
+    email: String
+}
+```
+
+### Node with Unique Index
+
+Unique indexes enforce uniqueness constraints:
+
+```hql
+N::User {
+    UNIQUE INDEX email: String,
+    name: String,
+    age: I32
+}
+```
+
+### Node with Default Values
+
+Fields can have default values:
+
+```hql
+N::User {
+    name: String,
+    age: I32 DEFAULT 0,
+    created_at: Date DEFAULT NOW,
+    active: Boolean DEFAULT true
+}
+```
+
+<ParamField path="DEFAULT NOW" type="special">
+  Special value for current timestamp on Date fields
+</ParamField>
+
+## Edge Definitions
+
+Edges represent relationships between nodes:
+
+<ParamField path="E::TypeName" type="edge">
+  Edge type name must start with an uppercase letter
+</ParamField>
+
+### Basic Edge
+
+```hql
+E::Knows {
+    From: User,
+    To: User,
+    Properties: {
+        since: Date,
+        strength: F32
+    }
+}
+```
+
+### Edge Components
+
+<ParamField path="From" type="required">
+  Source node type for the edge
+</ParamField>
+
+<ParamField path="To" type="required">
+  Destination node type for the edge
+</ParamField>
+
+<ParamField path="Properties" type="optional">
+  Additional properties stored on the edge
+</ParamField>
+
+### Edge without Properties
+
+```hql
+E::Follows {
+    From: User,
+    To: User,
+}
+```
+
+### Unique Edges
+
+Prevent duplicate edges between the same nodes:
+
+```hql
+E::Follows UNIQUE {
+    From: User,
+    To: User,
+}
+```
+
+## Vector Definitions
+
+Vectors represent embeddings for semantic search:
+
+<ParamField path="V::TypeName" type="vector">
+  Vector type name must start with an uppercase letter
+</ParamField>
+
+### Basic Vector
+
+```hql
+V::Document {
+    content: String,
+    created_at: I64
+}
+```
+
+### Vector with Explicit Dimensions
+
+```hql
+V::Embedding {
+    vector: [F64],
+    text: String,
+    metadata: String
+}
+```
+
+## Field Types
+
+HelixQL supports these field types:
+
+<CodeGroup>
+
+```hql Primitives
+N::Example {
+    text: String,
+    count: I32,
+    score: F64,
+    active: Boolean,
+    timestamp: Date,
+    entity_id: ID
+}
+```
+
+```hql Arrays
+N::Example {
+    tags: [String],
+    scores: [F32],
+    embeddings: [F64]
+}
+```
+
+```hql Objects
+N::Example {
+    metadata: {
+        key: String,
+        value: String
+    },
+    config: {
+        enabled: Boolean,
+        threshold: F32
+    }
+}
+```
+
+</CodeGroup>
+
+## Complete Example
+
+Here's a comprehensive schema example:
+
+```hql
+schema::1 {
+    N::User {
+        UNIQUE INDEX email: String,
+        INDEX name: String,
+        age: I32,
+        created_at: Date DEFAULT NOW,
+        active: Boolean DEFAULT true
+    }
+
+    N::Post {
+        INDEX title: String,
+        content: String,
+        published_at: Date,
+        view_count: I64 DEFAULT 0
+    }
+
+    E::Authored {
+        From: User,
+        To: Post,
+        Properties: {
+            created_at: Date DEFAULT NOW
+        }
+    }
+
+    E::Likes {
+        From: User,
+        To: Post,
+        Properties: {
+            liked_at: Date DEFAULT NOW
+        }
+    }
+
+    V::PostEmbedding {
+        content: String,
+        post_id: ID
+    }
+}
+```
+
+## Type Reference
+
+<ParamField path="String" type="text">
+  UTF-8 encoded strings
+</ParamField>
+
+<ParamField path="I8, I16, I32, I64" type="integer">
+  Signed integers (8, 16, 32, 64 bits)
+</ParamField>
+
+<ParamField path="U8, U16, U32, U64, U128" type="unsigned">
+  Unsigned integers (8, 16, 32, 64, 128 bits)
+</ParamField>
+
+<ParamField path="F32, F64" type="float">
+  Floating-point numbers (32, 64 bits)
+</ParamField>
+
+<ParamField path="Boolean" type="bool">
+  True or false values
+</ParamField>
+
+<ParamField path="Date" type="datetime">
+  ISO 8601 datetime with timezone
+</ParamField>
+
+<ParamField path="ID" type="identifier">
+  Unique identifier for entities (UUID)
+</ParamField>
+
+## Index Types
+
+<ParamField path="INDEX" type="standard">
+  Creates an index for faster queries on the field
+</ParamField>
+
+<ParamField path="UNIQUE INDEX" type="constraint">
+  Creates an index and enforces uniqueness constraint
+</ParamField>
+
+## Best Practices
+
+1. **Use indexes wisely**: Index fields frequently used in WHERE clauses or lookups
+2. **Unique indexes for identifiers**: Use UNIQUE INDEX for email, username, etc.
+3. **Default values**: Use DEFAULT NOW for timestamp fields
+4. **Type selection**: Choose appropriate numeric types (I32 vs I64) based on expected range
+5. **Schema versioning**: Use schema versions for production databases to support migrations
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Writing Queries" icon="code" href="/hql/queries">
+    Learn how to query your schema
+  </Card>
+  <Card title="Schema Migrations" icon="rotate" href="/hql/migrations">
+    Version and migrate your schema
+  </Card>
+</CardGroup>

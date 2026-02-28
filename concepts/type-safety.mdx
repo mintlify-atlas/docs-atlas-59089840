@@ -1,0 +1,497 @@
+---
+title: Type-Safe Queries
+description: How HelixQL's type system prevents errors and enables confident deployments
+---
+
+HelixQL is a **compile-time type-safe** query language. Unlike SQL or other runtime query languages, HelixQL queries are compiled to native Rust code before deployment. This eliminates an entire class of errors that traditionally plague database applications.
+
+## The Problem with Runtime Queries
+
+Traditional databases parse queries at runtime:
+
+```typescript
+// SQL example - errors only caught at runtime
+const user = await db.query(
+  "SELECT * FROM users WHERE emai = $1",  // Typo in column name!
+  [email]
+);
+
+// Type mismatch - also runtime error
+const age = await db.query(
+  "SELECT age FROM users WHERE email = $1",
+  [42]  // Passing number instead of string!
+);
+```
+
+Problems:
+- **Typos** in column names aren't caught until query executes
+- **Type mismatches** between parameters and schema cause runtime failures
+- **Schema changes** break deployed code silently
+- **Testing** requires running every query path
+
+## HelixQL's Compile-Time Approach
+
+HelixQL queries are compiled when you run `helix push`:
+
+```hql
+// schema.hx - defines types
+N::User {
+    INDEX email: String,
+    name: String,
+    age: U32,
+}
+
+// queries.hx - uses those types
+QUERY getUser(user_email: String) =>
+    user <- N<User>({email: user_email})  // Checked at compile time
+    RETURN user
+```
+
+When you deploy:
+
+```bash
+helix push dev
+```
+
+HelixDB:
+1. **Parses** all `.hx` files
+2. **Type-checks** queries against schema
+3. **Compiles** to optimized Rust code
+4. **Generates** type-safe API endpoints
+5. **Deploys** to your instance
+
+If there's a type error, deployment fails **before** any code reaches production.
+
+<Note>
+This is similar to how TypeScript catches errors before JavaScript runs, but for database queries.
+</Note>
+
+## Type System Foundations
+
+### Schema as Type Definitions
+
+Every schema declaration creates a type:
+
+```hql
+N::User {
+    INDEX email: String,
+    name: String,
+    age: U32,
+    created_at: String,
+}
+```
+
+This defines:
+- A node type `User`
+- Required properties: `email`, `name`, `age`, `created_at`
+- Property types: `String`, `U32`
+- Index constraint: `email` is indexed
+
+### Query Parameter Types
+
+Query parameters are explicitly typed:
+
+```hql
+QUERY createUser(
+    email: String,      // Must be String
+    name: String,
+    age: U32,           // Must be U32
+) =>
+    user <- AddN<User>({
+        email: email,
+        name: name,
+        age: age,
+        created_at: Now()
+    })
+    RETURN user
+```
+
+The compiler verifies:
+- All required properties are provided
+- Property types match schema
+- Parameter types match usage
+
+**This would fail to compile:**
+
+```hql
+QUERY createUser(
+    email: String,
+    name: String,
+    age: String,        // Wrong! Schema says U32
+) =>
+    user <- AddN<User>({
+        email: email,
+        name: name,
+        age: age,       // Type error: expected U32, got String
+        created_at: Now()
+    })
+    RETURN user
+```
+
+Error message:
+```
+Error: Type mismatch in AddN<User>
+  ├─ Expected: age: U32
+  └─ Got: age: String
+```
+
+### Edge Type Constraints
+
+Edges enforce source and destination types:
+
+```hql
+E::Follows {
+    From: User,         // Must connect from User node
+    To: User,           // Must connect to User node
+    Properties: {
+        since: String,
+    }
+}
+
+QUERY followUser(from_email: String, to_email: String) =>
+    from <- N<User>({email: from_email})
+    to <- N<User>({email: to_email})
+    
+    // Type-checked: both nodes are User
+    edge <- AddE<Follows>({since: Now()})::From(from)::To(to)
+    
+    RETURN edge
+```
+
+**This would fail:**
+
+```hql
+N::Post { content: String }
+
+QUERY invalidFollow(user_email: String, post_id: ID) =>
+    user <- N<User>({email: user_email})
+    post <- N<Post>(post_id)
+    
+    // ERROR: Follows edge requires User -> User, not User -> Post
+    edge <- AddE<Follows>({since: Now()})::From(user)::To(post)
+    
+    RETURN edge
+```
+
+Error message:
+```
+Error: Edge type constraint violation in AddE<Follows>
+  ├─ Expected: To: User
+  └─ Got: To: Post
+```
+
+<Tip>
+Edge constraints prevent logical errors like connecting incompatible entities, which would be runtime errors in dynamically-typed graph databases.
+</Tip>
+
+## Type Inference
+
+HelixQL infers types through query chains:
+
+```hql
+QUERY getUserPosts(email: String) =>
+    user <- N<User>({email: email})     // user: User
+    posts <- user -E<Authored>-> N<Post>  // posts: [Post]
+    
+    // Compiler knows posts is array of Post
+    titles <- posts.content             // titles: [String]
+    
+    RETURN titles
+```
+
+The compiler tracks:
+1. `user` has type `User` (from schema)
+2. `posts` has type `[Post]` (from edge traversal)
+3. `titles` has type `[String]` (from property access on array)
+
+### Generic Type Parameters
+
+Some operations are generic over node types:
+
+```hql
+// VS (vector search) is generic over vector type
+chunks <- VS<Chunk>(Embed(query), 10)     // Returns [Chunk]
+posts <- VS<Post>(Embed(query), 5)        // Returns [Post]
+```
+
+The type parameter `<Chunk>` or `<Post>` tells the compiler which vector type to search.
+
+## Return Type Checking
+
+Return values are type-checked:
+
+```hql
+QUERY getUser(email: String) =>
+    user <- N<User>({email: email})
+    RETURN user                    // Returns: User
+
+QUERY getUserAge(email: String) =>
+    user <- N<User>({email: email})
+    RETURN user.age                // Returns: U32
+
+QUERY getUsers() =>
+    users <- N<User>
+    RETURN users                   // Returns: [User]
+```
+
+The SDK uses these return types:
+
+```typescript
+// TypeScript SDK - types are generated from HelixQL
+const user: User = await client.query("getUser", { 
+  email: "alice@example.com" 
+});
+
+const age: number = await client.query("getUserAge", {
+  email: "alice@example.com"
+});
+
+const users: User[] = await client.query("getUsers", {});
+```
+
+<Info>
+The TypeScript and Python SDKs generate types from your compiled queries, ensuring end-to-end type safety from schema to client.
+</Info>
+
+## Property Access Validation
+
+Property access is validated against schema:
+
+```hql
+N::User {
+    INDEX email: String,
+    name: String,
+    age: U32,
+}
+
+QUERY getUserInfo(email: String) =>
+    user <- N<User>({email: email})
+    
+    // Valid: 'name' exists in User schema
+    user_name <- user.name
+    
+    // ERROR: 'address' doesn't exist in User schema
+    user_address <- user.address
+    
+    RETURN user_name
+```
+
+Error message:
+```
+Error: Property 'address' does not exist on type 'User'
+  Available properties: email, name, age, created_at
+```
+
+## Function Type Signatures
+
+Built-in functions have type signatures:
+
+```hql
+// Embed: String -> [F64]
+embedding <- Embed("some text")          // embedding: [F64]
+
+// Now: () -> String
+timestamp <- Now()                       // timestamp: String
+
+// VS: <T>(embedding: [F64], k: U32) -> [T]
+chunks <- VS<Chunk>(embedding, 10)      // chunks: [Chunk]
+
+// AddN: <T>(properties: T) -> T
+user <- AddN<User>({...})                // user: User
+```
+
+Type mismatches are caught:
+
+```hql
+// ERROR: VS expects [F64], got String
+results <- VS<Chunk>("text query", 10)
+
+// ERROR: Embed expects String, got U32
+embedding <- Embed(42)
+```
+
+## Compile-Time Guarantees
+
+When a HelixQL query compiles successfully, you have guarantees:
+
+1. **All referenced types exist** in the schema
+2. **All properties exist** on their respective types
+3. **All type conversions are valid** (no String where U32 expected)
+4. **All edge connections are valid** (From/To types match schema)
+5. **All parameters will be provided** by the client (no missing required params)
+6. **Return type matches** what the SDK expects
+
+<Note>
+These guarantees eliminate the most common sources of database errors: typos, schema drift, and type mismatches.
+</Note>
+
+## Benefits in Practice
+
+### Refactoring Safety
+
+Change a schema property:
+
+```hql
+// Before
+N::User {
+    INDEX email: String,
+    full_name: String,  // ← Rename this
+    age: U32,
+}
+
+// After
+N::User {
+    INDEX email: String,
+    name: String,       // ← To this
+    age: U32,
+}
+```
+
+Now run `helix check`:
+
+```bash
+$ helix check
+Error: Property 'full_name' does not exist on type 'User'
+  at queries.hx:15:20
+  
+  user_name <- user.full_name
+                    ^^^^^^^^^
+```
+
+The compiler finds **all** queries that need updating, preventing runtime errors.
+
+### API Contract Enforcement
+
+Query signatures become API contracts:
+
+```hql
+QUERY createUser(
+    email: String,
+    name: String,
+    age: U32,
+) => ...
+```
+
+The generated SDK enforces this:
+
+```typescript
+// Compile error in TypeScript: missing 'age' parameter
+await client.query("createUser", {
+  email: "alice@example.com",
+  name: "Alice",
+  // age: 25,  ← Missing!
+});
+
+// Compile error: wrong type for 'age'
+await client.query("createUser", {
+  email: "alice@example.com",
+  name: "Alice",
+  age: "25",  // ← Should be number, not string
+});
+```
+
+### Testing Reduction
+
+With runtime queries, you need integration tests for every code path:
+
+```typescript
+// SQL - need runtime tests
+test("typo in column name", async () => {
+  await expect(
+    db.query("SELECT emai FROM users")  // Typo!
+  ).rejects.toThrow();
+});
+```
+
+With HelixQL, these errors are caught at compile time:
+
+```bash
+$ helix check
+Error: Property 'emai' does not exist on type 'User'
+```
+
+No test needed—it won't compile.
+
+<Tip>
+You can focus integration tests on business logic rather than catching typos and type errors.
+</Tip>
+
+## Comparison with Other Approaches
+
+| Approach | Type Checking | Error Detection | Performance |
+|----------|---------------|-----------------|-------------|
+| Raw SQL | None | Runtime | Fast |
+| SQL + ORM | Runtime | Runtime | Slow |
+| GraphQL | Runtime schema | Runtime | Medium |
+| HelixQL | Compile-time | Compile-time | Fast |
+
+**HelixQL** combines the performance of raw queries with the safety of compile-time checking.
+
+## Advanced: Type System Internals
+
+HelixQL's type system is implemented in the analyzer:
+
+```rust
+// From helixc/analyzer/types.rs
+pub enum Type {
+    String,
+    I32, I64,
+    U32, U64,
+    F32, F64,
+    Bool,
+    ID,
+    Array(Box<Type>),
+    Node(String),        // Node<User>
+    Edge(String),        // Edge<Follows>
+    Vector(String),      // Vector<Chunk>
+    // ...
+}
+```
+
+Type inference flows through the AST:
+
+```rust
+fn infer_expr_type(&mut self, expr: &Expr) -> Result<Type> {
+    match expr {
+        Expr::NodeSource(label) => Ok(Type::Array(Box::new(Type::Node(label.clone())))),
+        Expr::PropertyAccess(obj, prop) => {
+            let obj_type = self.infer_expr_type(obj)?;
+            self.get_property_type(&obj_type, prop)
+        },
+        // ...
+    }
+}
+```
+
+This enables the compiler to catch errors before generating Rust code.
+
+## Limitations
+
+HelixQL's type system has some constraints:
+
+1. **Static schemas:** Schema changes require recompilation
+2. **No dynamic properties:** All properties must be declared
+3. **Compilation overhead:** Changes require `helix push`
+
+These are intentional trade-offs for safety and performance.
+
+<Note>
+For applications that need dynamic schemas, consider using a `metadata: String` property with JSON, validated at runtime.
+</Note>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="HelixQL Guide" href="/documentation/hql/hql" icon="code">
+    Learn the full HelixQL syntax
+  </Card>
+  <Card title="Schema Design" href="/documentation/hql/schema" icon="pen-ruler">
+    Best practices for defining schemas
+  </Card>
+  <Card title="TypeScript SDK" href="/sdk/typescript" icon="js">
+    Use generated types in your app
+  </Card>
+  <Card title="Testing Guide" href="/guides/testing" icon="vial">
+    Test HelixQL queries effectively
+  </Card>
+</CardGroup>

@@ -1,0 +1,635 @@
+---
+title: MCP Tools for AI Agents
+description: Integrate HelixDB with AI agents using the Model Context Protocol (MCP)
+---
+
+## Overview
+
+HelixDB provides built-in Model Context Protocol (MCP) support, allowing AI agents to query graphs and vectors through a standardized interface. MCP enables stateful, multi-step queries where agents can build complex traversals incrementally.
+
+## MCP Architecture
+
+The MCP implementation consists of:
+
+- **Connection management** - Stateful sessions for multi-step queries
+- **Tool handlers** - Graph operations exposed as MCP tools
+- **Query chains** - Sequential traversal steps stored per connection
+- **Streaming results** - Iterate through large result sets efficiently
+
+Source: `helix-gateway/mcp/mcp.rs` and `helix-gateway/mcp/tools.rs`
+
+## Setting Up MCP
+
+<Steps>
+
+### Initialize the MCP backend
+
+```rust
+use helix_db::helix_gateway::mcp::mcp::{McpBackend, McpConnections};
+use std::sync::{Arc, Mutex};
+
+let db = Arc::new(HelixDB::new("./data", None).await?);
+
+// Create MCP backend
+let mcp_backend = Arc::new(McpBackend::new(Arc::clone(&db.storage)));
+
+// Initialize connection manager
+let mcp_connections = Arc::new(Mutex::new(McpConnections::new()));
+```
+
+### Create a connection
+
+```rust
+use helix_db::helix_gateway::mcp::mcp::MCPConnection;
+
+// Initialize a new MCP connection
+let connection_id = uuid::Uuid::new_v4().to_string();
+let connection = MCPConnection::new(connection_id.clone());
+
+{
+    let mut connections = mcp_connections.lock().unwrap();
+    connections.add_connection(connection);
+}
+
+println!("Connection ID: {}", connection_id);
+```
+
+</Steps>
+
+## Available MCP Tools
+
+### Node and edge traversals
+
+The MCP API exposes these core traversal operations:
+
+#### NFromType - Get nodes by type
+
+```rust
+use helix_db::helix_gateway::mcp::tools::ToolArgs;
+
+let step = ToolArgs::NFromType {
+    node_type: "user".to_string(),
+};
+```
+
+#### OutStep - Traverse outgoing edges
+
+```rust
+let step = ToolArgs::OutStep {
+    edge_label: "friends_with".to_string(),
+    edge_type: EdgeType::Node,
+    filter: None,
+};
+```
+
+#### InStep - Traverse incoming edges
+
+```rust
+let step = ToolArgs::InStep {
+    edge_label: "follows".to_string(),
+    edge_type: EdgeType::Node,
+    filter: None,
+};
+```
+
+#### FilterItems - Filter by properties
+
+```rust
+let filter = FilterTraversal {
+    properties: Some(vec![vec![
+        FilterProperties {
+            key: "age".to_string(),
+            value: Value::I32(18),
+            operator: Some(Operator::Gte),
+        }
+    ]]),
+    filter_traversals: None,
+};
+
+let step = ToolArgs::FilterItems { filter };
+```
+
+### Vector search tools
+
+#### SearchVec - Search by vector
+
+```rust
+let step = ToolArgs::SearchVec {
+    vector: query_embedding,
+    k: 10,
+    min_score: Some(0.7),
+    cutoff: None,
+};
+```
+
+#### SearchVecText - Search by text (auto-embed)
+
+```rust
+// Automatically generates embeddings using configured provider
+let step = ToolArgs::SearchVecText {
+    query: "search query".to_string(),
+    label: "document".to_string(),
+    k: 10,
+};
+```
+
+#### SearchKeyword - BM25 full-text search
+
+```rust
+let step = ToolArgs::SearchKeyword {
+    query: "database graph".to_string(),
+    limit: 20,
+    label: "document".to_string(),
+};
+```
+
+### Ordering and filtering
+
+#### OrderBy - Sort results
+
+```rust
+let step = ToolArgs::OrderBy {
+    properties: "created_at".to_string(),
+    order: Order::Desc,
+};
+```
+
+## Building Query Chains
+
+### Execute multi-step queries
+
+Build complex queries by chaining tools:
+
+```rust
+use helix_db::helix_gateway::mcp::tools::{execute_query_chain, ToolArgs};
+
+let txn = db.read_txn()?;
+let arena = bumpalo::Bump::new();
+
+// Define query chain
+let steps = vec![
+    // Start with all users
+    ToolArgs::NFromType {
+        node_type: "user".to_string(),
+    },
+    // Filter to active users
+    ToolArgs::FilterItems {
+        filter: FilterTraversal {
+            properties: Some(vec![vec![
+                FilterProperties {
+                    key: "active".to_string(),
+                    value: Value::Boolean(true),
+                    operator: Some(Operator::Eq),
+                }
+            ]]),
+            filter_traversals: None,
+        },
+    },
+    // Get their posts
+    ToolArgs::OutStep {
+        edge_label: "posted".to_string(),
+        edge_type: EdgeType::Node,
+        filter: None,
+    },
+    // Order by recency
+    ToolArgs::OrderBy {
+        properties: "created_at".to_string(),
+        order: Order::Desc,
+    },
+];
+
+// Execute the chain
+let stream = execute_query_chain(
+    &steps,
+    &db.storage,
+    &txn,
+    &arena,
+)?;
+
+let results = stream.collect()?;
+```
+
+### Stateful execution
+
+Use connections for incremental query building:
+
+```rust
+use helix_db::helix_gateway::mcp::mcp::MCPToolInput;
+
+// Add steps incrementally
+{
+    let mut connections = mcp_connections.lock().unwrap();
+    let connection = connections
+        .get_connection_mut(&connection_id)
+        .ok_or("Connection not found")?;
+    
+    // Step 1: Get all documents
+    connection.add_query_step(ToolArgs::NFromType {
+        node_type: "document".to_string(),
+    });
+    
+    // Step 2: Filter by category
+    connection.add_query_step(ToolArgs::FilterItems {
+        filter: FilterTraversal {
+            properties: Some(vec![vec![
+                FilterProperties {
+                    key: "category".to_string(),
+                    value: Value::String("technical".to_string()),
+                    operator: Some(Operator::Eq),
+                }
+            ]]),
+            filter_traversals: None,
+        },
+    });
+}
+
+// Execute accumulated query chain
+let txn = db.read_txn()?;
+let arena = bumpalo::Bump::new();
+
+let query_chain = {
+    let connections = mcp_connections.lock().unwrap();
+    let connection = connections
+        .get_connection(&connection_id)
+        .ok_or("Connection not found")?;
+    connection.query_chain.clone()
+};
+
+let stream = execute_query_chain(
+    &query_chain,
+    &db.storage,
+    &txn,
+    &arena,
+)?;
+
+let results = stream.collect()?;
+```
+
+## Result Streaming
+
+### Paginated results
+
+Iterate through large result sets:
+
+```rust
+let mut connections = mcp_connections.lock().unwrap();
+let connection = connections
+    .get_connection_mut(&connection_id)
+    .ok_or("Connection not found")?;
+
+// Get first result
+let first = connection.next_item(&db.storage, &arena)?;
+println!("First: {:?}", first);
+
+// Get next result
+let second = connection.next_item(&db.storage, &arena)?;
+println!("Second: {:?}", second);
+
+// Continue until TraversalValue::Empty
+loop {
+    match connection.next_item(&db.storage, &arena)? {
+        TraversalValue::Empty => break,
+        value => println!("Next: {:?}", value),
+    }
+}
+```
+
+### Collect range
+
+Get a specific range of results:
+
+```rust
+let stream = execute_query_chain(
+    &query_chain,
+    &db.storage,
+    &txn,
+    &arena,
+)?;
+
+// Get results 10-20
+let page = stream.into_ro_iterator()
+    .skip(10)
+    .take(10)
+    .collect::<Result<Vec<_>, _>>()?;
+```
+
+## Advanced Patterns
+
+### Nested filters
+
+Filter using sub-traversals:
+
+```rust
+let filter = FilterTraversal {
+    properties: None,
+    filter_traversals: Some(vec![
+        // Only users who have posted
+        ToolArgs::OutStep {
+            edge_label: "posted".to_string(),
+            edge_type: EdgeType::Node,
+            filter: None,
+        }
+    ]),
+};
+
+let step = ToolArgs::FilterItems { filter };
+```
+
+### Complex filters with multiple conditions
+
+```rust
+let filter = FilterTraversal {
+    // OR groups of AND conditions
+    properties: Some(vec![
+        // Group 1: Premium users
+        vec![
+            FilterProperties {
+                key: "subscription".to_string(),
+                value: Value::String("premium".to_string()),
+                operator: Some(Operator::Eq),
+            }
+        ],
+        // Group 2: Active free users with high engagement
+        vec![
+            FilterProperties {
+                key: "subscription".to_string(),
+                value: Value::String("free".to_string()),
+                operator: Some(Operator::Eq),
+            },
+            FilterProperties {
+                key: "engagement_score".to_string(),
+                value: Value::F64(0.8),
+                operator: Some(Operator::Gte),
+            },
+        ],
+    ]),
+    filter_traversals: None,
+};
+```
+
+### Hybrid search with MCP
+
+Combine vector search with graph traversals:
+
+```rust
+let steps = vec![
+    // Start with semantic search
+    ToolArgs::SearchVecText {
+        query: "machine learning algorithms".to_string(),
+        label: "document".to_string(),
+        k: 50,
+    },
+    // Get parent documents
+    ToolArgs::OutStep {
+        edge_label: "belongs_to".to_string(),
+        edge_type: EdgeType::Node,
+        filter: None,
+    },
+    // Filter by recency
+    ToolArgs::FilterItems {
+        filter: FilterTraversal {
+            properties: Some(vec![vec![
+                FilterProperties {
+                    key: "published_date".to_string(),
+                    value: Value::I64(
+                        chrono::Utc::now().timestamp() - (365 * 24 * 60 * 60)
+                    ),
+                    operator: Some(Operator::Gte),
+                }
+            ]]),
+            filter_traversals: None,
+        },
+    },
+    // Get all chunks from those documents
+    ToolArgs::InStep {
+        edge_label: "belongs_to".to_string(),
+        edge_type: EdgeType::Vec,
+        filter: None,
+    },
+    // Order by chunk position
+    ToolArgs::OrderBy {
+        properties: "chunk_id".to_string(),
+        order: Order::Asc,
+    },
+];
+
+let stream = execute_query_chain(&steps, &db.storage, &txn, &arena)?;
+let context = stream.collect()?;
+```
+
+## MCP Handler Functions
+
+HelixDB exposes these handlers (defined in `helix-gateway/mcp/mcp.rs`):
+
+### init - Create new connection
+
+```rust
+#[mcp_handler]
+pub fn init(input: &mut MCPToolInput) -> Result<Response, GraphError> {
+    let connection_id = uuid::Uuid::new_v4().to_string();
+    let mut connections = input.mcp_connections.lock().unwrap();
+    connections.add_connection(MCPConnection::new(connection_id.clone()));
+    Ok(Format::Json.create_response(&connection_id))
+}
+```
+
+### tool_call - Execute a query step
+
+```rust
+#[mcp_handler]
+pub fn tool_call(input: &mut MCPToolInput) -> Result<Response, GraphError> {
+    let data: ToolCallRequest = sonic_rs::from_slice(&input.request.body)?;
+    execute_tool_step(input, &data.connection_id, data.tool)
+}
+```
+
+### next - Get next result
+
+```rust
+#[mcp_handler]
+pub fn next(input: &mut MCPToolInput) -> Result<Response, GraphError> {
+    // Streams next result from current query chain
+}
+```
+
+### collect - Get all results
+
+```rust
+#[mcp_handler]
+pub fn collect(input: &mut MCPToolInput) -> Result<Response, GraphError> {
+    // Collects all remaining results
+}
+```
+
+### reset - Clear connection state
+
+```rust
+#[mcp_handler]
+pub fn reset(input: &mut MCPToolInput) -> Result<Response, GraphError> {
+    // Clears query chain and resets position
+}
+```
+
+## Agent Integration Example
+
+Complete example for AI agent integration:
+
+```rust
+use helix_db::helix_gateway::mcp::mcp::*;
+use helix_db::helix_gateway::mcp::tools::*;
+
+#[derive(Debug)]
+struct AgentQuery {
+    connection_id: String,
+    steps: Vec<ToolArgs>,
+}
+
+impl AgentQuery {
+    fn new(mcp_connections: &Arc<Mutex<McpConnections>>) -> Self {
+        let connection_id = uuid::Uuid::new_v4().to_string();
+        let connection = MCPConnection::new(connection_id.clone());
+        
+        let mut connections = mcp_connections.lock().unwrap();
+        connections.add_connection(connection);
+        
+        Self {
+            connection_id,
+            steps: Vec::new(),
+        }
+    }
+    
+    fn add_step(&mut self, step: ToolArgs) {
+        self.steps.push(step);
+    }
+    
+    fn execute(
+        &self,
+        db: &HelixGraphStorage,
+    ) -> Result<Vec<TraversalValue>> {
+        let txn = db.graph_env.read_txn()?;
+        let arena = bumpalo::Bump::new();
+        
+        let stream = execute_query_chain(
+            &self.steps,
+            db,
+            &txn,
+            &arena,
+        )?;
+        
+        stream.collect()
+    }
+}
+
+// Usage
+let mcp_connections = Arc::new(Mutex::new(McpConnections::new()));
+let mut query = AgentQuery::new(&mcp_connections);
+
+// Agent builds query incrementally
+query.add_step(ToolArgs::SearchVecText {
+    query: "What is machine learning?".to_string(),
+    label: "document".to_string(),
+    k: 10,
+});
+
+query.add_step(ToolArgs::OutStep {
+    edge_label: "cites".to_string(),
+    edge_type: EdgeType::Node,
+    filter: None,
+});
+
+let results = query.execute(&db.storage)?;
+```
+
+## Error Handling
+
+```rust
+use helix_db::helix_engine::types::GraphError;
+
+fn safe_mcp_query(
+    steps: &[ToolArgs],
+    db: &HelixGraphStorage,
+) -> Result<Vec<TraversalValue>, GraphError> {
+    let txn = db.graph_env.read_txn()?;
+    let arena = bumpalo::Bump::new();
+    
+    match execute_query_chain(steps, db, &txn, &arena) {
+        Ok(stream) => stream.collect(),
+        Err(GraphError::StorageError(msg)) if msg.contains("Connection not found") => {
+            Err(GraphError::StorageError(
+                "MCP connection expired or invalid".to_string()
+            ))
+        }
+        Err(e) => Err(e),
+    }
+}
+```
+
+## Performance Considerations
+
+### Connection pooling
+
+```rust
+use std::collections::HashMap;
+
+struct ConnectionPool {
+    max_connections: usize,
+    connections: Arc<Mutex<McpConnections>>,
+}
+
+impl ConnectionPool {
+    fn new(max_connections: usize) -> Self {
+        Self {
+            max_connections,
+            connections: Arc::new(Mutex::new(
+                McpConnections::new_with_max_connections(max_connections)
+            )),
+        }
+    }
+    
+    fn acquire(&self) -> Result<String> {
+        let mut connections = self.connections.lock().unwrap();
+        
+        if connections.connections.len() >= self.max_connections {
+            return Err(GraphError::from("Connection pool exhausted"));
+        }
+        
+        let connection_id = uuid::Uuid::new_v4().to_string();
+        connections.add_connection(MCPConnection::new(connection_id.clone()));
+        
+        Ok(connection_id)
+    }
+    
+    fn release(&self, connection_id: &str) {
+        let mut connections = self.connections.lock().unwrap();
+        connections.remove_connection(connection_id);
+    }
+}
+```
+
+### Query optimization
+
+```rust
+// Prefer specific filters early in the chain
+let optimized_steps = vec![
+    // Start narrow
+    ToolArgs::NFromType {
+        node_type: "user".to_string(),
+    },
+    // Filter early
+    ToolArgs::FilterItems {
+        filter: specific_filter,
+    },
+    // Then traverse
+    ToolArgs::OutStep {
+        edge_label: "posted".to_string(),
+        edge_type: EdgeType::Node,
+        filter: None,
+    },
+];
+```
+
+## Next Steps
+
+- Build [RAG Applications](/guides/rag-applications) with MCP tools
+- Explore [Graph Traversals](/guides/graph-traversals) for query patterns
+- See [Vector Search](/guides/vector-search) for search optimization

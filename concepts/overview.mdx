@@ -1,0 +1,197 @@
+---
+title: Architecture Overview
+description: Understanding HelixDB's design philosophy and unified architecture
+---
+
+HelixDB is a graph-vector database built from scratch in Rust that unifies multiple data models into a single platform. It eliminates the need for separate application databases, vector databases, and graph databases.
+
+## Design Philosophy
+
+HelixDB is built on three core principles:
+
+<CardGroup cols={3}>
+  <Card title="Unified Data Model" icon="diagram-project">
+    Graph, vector, key-value, and document data in one system
+  </Card>
+  <Card title="Type Safety" icon="shield-check">
+    Compile-time guarantees through HelixQL's type system
+  </Card>
+  <Card title="Performance" icon="bolt">
+    Built in Rust with LMDB for ultra-low latency operations
+  </Card>
+</CardGroup>
+
+## Architecture Layers
+
+HelixDB is organized into distinct layers, each with specific responsibilities:
+
+### Storage Layer (LMDB)
+
+At the foundation, HelixDB uses **LMDB** (Lightning Memory-Mapped Database) as its storage engine. This provides:
+
+- Memory-mapped file I/O for minimal latency
+- ACID transactions with MVCC (Multi-Version Concurrency Control)
+- Multiple database tables within a single environment
+- Zero-copy reads for maximum performance
+
+The storage layer organizes data into specialized tables:
+
+```rust
+// Database tables in storage_core/mod.rs
+const DB_NODES: &str = "nodes";           // Node data
+const DB_EDGES: &str = "edges";           // Edge data
+const DB_OUT_EDGES: &str = "out_edges";   // Outgoing edge indices
+const DB_IN_EDGES: &str = "in_edges";     // Incoming edge indices
+const DB_VECTORS: &str = "vectors";       // Vector embeddings
+const DB_HNSW_EDGES: &str = "hnsw_out_nodes"; // HNSW graph structure
+```
+
+<Info>
+Each table is optimized for its access pattern. For example, `out_edges` and `in_edges` use `DUP_SORT` and `DUP_FIXED` flags to efficiently store multiple edges under a single key.
+</Info>
+
+### Graph Engine
+
+The graph engine manages nodes and edges with a highly optimized adjacency structure:
+
+**Key Design:**
+- Nodes are stored with 128-bit IDs (u128)
+- Edges connect nodes bidirectionally
+- Adjacency lists enable O(1) edge lookups
+- Secondary indices support fast property-based queries
+
+**Adjacency Storage:**
+```rust
+// Out edge key structure (20 bytes)
+key = from_node_id(16) | label_hash(4)
+
+// Edge data structure (32 bytes, DUP_FIXED)
+value = edge_id(16) | to_node_id(16)
+```
+
+This compact representation allows retrieving all outgoing edges of a specific label with a single database read.
+
+<Tip>
+The use of DUP_SORT means all edges with the same source node and label are stored together, enabling extremely efficient graph traversals.
+</Tip>
+
+### Vector Engine (HNSW)
+
+HelixDB implements **Hierarchical Navigable Small World (HNSW)** graphs for approximate nearest neighbor search:
+
+- Multi-layer graph structure for logarithmic search complexity
+- Configurable parameters (M, ef_construction, ef_search)
+- Built-in embedding support via the `Embed()` function
+- Seamless integration with graph traversals
+
+The vector engine stores:
+- Vector embeddings (f64 arrays)
+- HNSW navigation edges at multiple levels
+- Vector properties and metadata
+
+**HNSW Configuration:**
+```rust
+pub struct HNSWConfig {
+    pub m: usize,             // Max bidirectional links (5-48)
+    pub ef_construct: usize,  // Construction candidates (40-512)
+    pub ef: usize,            // Search candidates (10-512)
+    pub m_l: f64,             // Level generation factor
+}
+```
+
+### Query Engine (HelixQL)
+
+HelixQL is a type-safe query language that compiles to native Rust code:
+
+- Queries are defined in `.hx` files
+- Compiled to optimized Rust at deploy time
+- Type checking prevents runtime errors
+- Queries become API endpoints
+
+<Note>
+Unlike SQL databases where queries are parsed at runtime, HelixQL queries are compiled ahead of time. This eliminates parsing overhead and provides compile-time type safety.
+</Note>
+
+## Data Flow
+
+Here's how data moves through HelixDB:
+
+1. **Write Path:**
+   - Client calls a compiled query endpoint
+   - Query executes with type-safe parameters
+   - Graph operations update nodes/edges in LMDB
+   - Vector operations update HNSW index
+   - Transaction commits atomically
+
+2. **Read Path:**
+   - Query traverses graph structure
+   - HNSW performs similarity search if needed
+   - Results are filtered and aggregated
+   - Type-safe response returned to client
+
+3. **Hybrid Path (Graph + Vector):**
+   - Start with vector similarity search
+   - Traverse graph relationships from results
+   - Apply filters across both dimensions
+   - Return unified results
+
+## Memory Management
+
+HelixDB uses arena allocation for zero-copy performance:
+
+```rust
+// Arena-allocated nodes and edges avoid heap fragmentation
+pub struct Node<'arena> {
+    pub id: u128,
+    pub label: &'arena str,
+    pub properties: Option<ImmutablePropertiesMap<'arena>>,
+}
+```
+
+The `'arena` lifetime ensures:
+- Properties reference arena-allocated memory
+- No heap allocations during query execution
+- Memory freed in bulk when arena is dropped
+
+<Info>
+Arena allocation is particularly effective for read-heavy workloads where nodes and edges are loaded, processed, and then discarded together.
+</Info>
+
+## Concurrency Model
+
+HelixDB leverages LMDB's MVCC for concurrent access:
+
+- **Read transactions:** Multiple concurrent readers
+- **Write transactions:** Single writer with full ACID guarantees
+- **Isolation:** Readers see consistent snapshots
+- **No locks:** Lock-free read operations
+
+## Why This Architecture?
+
+This design enables HelixDB to:
+
+1. **Unify AI workflows:** Combine semantic search (vectors), knowledge graphs (graph), and structured data (relational) in one query
+2. **Deliver low latency:** Memory-mapped storage, compiled queries, and zero-copy reads minimize overhead
+3. **Ensure correctness:** Type-safe queries catch errors at compile time, not in production
+4. **Scale efficiently:** LMDB's append-only B+ trees and HNSW's logarithmic search scale to billions of vectors
+
+<Tip>
+The combination of graph and vector capabilities in a single storage engine eliminates the "impedance mismatch" that occurs when synchronizing data between separate databases.
+</Tip>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Data Model" href="/concepts/data-model" icon="database">
+    Explore nodes, edges, and vectors in detail
+  </Card>
+  <Card title="Graph-Vector Integration" href="/concepts/graph-vector-architecture" icon="circle-nodes">
+    Learn how graph and vector work together
+  </Card>
+  <Card title="Type Safety" href="/concepts/type-safety" icon="code">
+    Understand HelixQL's type system
+  </Card>
+  <Card title="Quick Start" href="/quickstart" icon="rocket">
+    Build your first HelixDB application
+  </Card>
+</CardGroup>

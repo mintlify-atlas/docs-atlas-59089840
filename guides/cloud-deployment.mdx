@@ -1,0 +1,876 @@
+---
+title: Cloud Deployment Guide
+description: Deploy HelixDB to production environments with cloud providers
+---
+
+## Overview
+
+HelixDB can be deployed to cloud environments using managed services or self-hosted infrastructure. This guide covers deployment to Helix Cloud (managed), Fly.io, AWS ECR, and custom Kubernetes clusters.
+
+## Deployment Options
+
+### Managed HelixDB Cloud
+
+The simplest option for production deployments:
+
+- **Fully managed** - Automated updates and maintenance
+- **High availability** - Multi-region deployment
+- **Enterprise support** - SLA guarantees and dedicated support
+- **Built-in monitoring** - Real-time metrics and alerting
+
+### Self-Hosted Options
+
+- **Fly.io** - Fast global edge deployment
+- **AWS ECS/ECR** - Enterprise container orchestration
+- **Google Cloud Run** - Serverless container platform
+- **Kubernetes** - Full control and customization
+
+## HelixDB Cloud Deployment
+
+<Steps>
+
+### Authenticate with Helix Cloud
+
+Sign up and authenticate:
+
+```bash
+helix auth login
+```
+
+This opens a browser for authentication and stores credentials locally.
+
+### Initialize cloud project
+
+```bash
+helix init
+```
+
+When prompted, select:
+- **Deployment type**: Helix Cloud
+- **Workspace**: Create new or select existing
+- **Project**: Create new or select existing
+- **Cluster**: Create new or select existing
+
+### Configure instance
+
+Update `helix.toml` with cloud configuration:
+
+```toml
+[project]
+name = "my-production-app"
+id = "proj_abc123xyz"  # Assigned during init
+
+[cloud.production]
+type = "helix"
+cluster_id = "cluster_abc123xyz"
+region = "us-east-1"
+build_mode = "release"
+
+[cloud.production.db_config]
+max_size_gb = 100
+max_readers = 512
+max_dbs = 24
+
+[cloud.production.env_vars]
+OPENAI_API_KEY = "sk-..."
+EMBEDDING_MODEL = "openai:text-embedding-3-small"
+```
+
+### Build and deploy
+
+```bash
+# Build the cloud instance
+helix build production
+
+# Deploy to Helix Cloud
+helix push production
+```
+
+Deployment typically completes in 2-5 minutes.
+
+### Get connection details
+
+```bash
+helix status production
+```
+
+Output:
+```
+Instance: production
+Status: running
+Cluster: cluster_abc123xyz
+Region: us-east-1
+Endpoint: https://my-production-app-abc123.helix-db.com
+Health: healthy
+```
+
+</Steps>
+
+## Fly.io Deployment
+
+### Prerequisites
+
+Install the Fly CLI:
+
+```bash
+curl -L https://fly.io/install.sh | sh
+fly auth login
+```
+
+### Initialize Fly deployment
+
+```bash
+helix init
+```
+
+Select:
+- **Deployment type**: Fly.io
+- **Organization**: Choose or create
+- **Region**: Select closest to your users
+- **VM size**: Choose based on workload
+
+### Configuration
+
+Update `helix.toml`:
+
+```toml
+[cloud.production]
+type = "fly"
+org = "my-org"
+region = "iad"  # us-east (Virginia)
+vm_size = "shared-cpu-4x"  # 4 shared CPUs, 8GB RAM
+
+[cloud.production.db_config]
+max_size_gb = 50
+max_readers = 256
+
+[cloud.production.env_vars]
+OPENAI_API_KEY = "sk-..."
+```
+
+### Deploy to Fly
+
+```bash
+# Build and deploy
+helix build production
+helix push production
+
+# Monitor deployment
+fly logs -a helix-my-production-app
+```
+
+### Set up persistent volumes
+
+Fly.io requires explicit volume configuration:
+
+```bash
+# Create volume
+fly volumes create helix_data \
+  --region iad \
+  --size 100 \
+  --app helix-my-production-app
+
+# Update fly.toml to mount volume
+vim .helix/instances/production/fly.toml
+```
+
+Add volume mount:
+
+```toml
+[mounts]
+source = "helix_data"
+destination = "/data"
+```
+
+### Scale the deployment
+
+Increase capacity:
+
+```bash
+# Vertical scaling (bigger VMs)
+fly scale vm dedicated-cpu-8x --app helix-my-production-app
+
+# Horizontal scaling (more instances)
+fly scale count 3 --app helix-my-production-app
+```
+
+## AWS ECS/ECR Deployment
+
+### Prerequisites
+
+Install AWS CLI and authenticate:
+
+```bash
+aws configure
+```
+
+Provide:
+- AWS Access Key ID
+- AWS Secret Access Key
+- Default region (e.g., us-east-1)
+
+### Initialize ECR deployment
+
+```bash
+helix init
+```
+
+Select:
+- **Deployment type**: AWS ECR
+- **Region**: Choose region
+- **Repository**: Create new or use existing
+
+### Configuration
+
+Update `helix.toml`:
+
+```toml
+[cloud.production]
+type = "ecr"
+registry = "123456789012.dkr.ecr.us-east-1.amazonaws.com"
+repository = "helix-my-production-app"
+region = "us-east-1"
+
+[cloud.production.db_config]
+max_size_gb = 200
+max_readers = 512
+```
+
+### Build and push to ECR
+
+```bash
+# Build container image
+helix build production
+
+# Push to ECR
+helix push production
+```
+
+The CLI automatically:
+1. Authenticates with ECR
+2. Builds the Docker image
+3. Tags with commit hash and "latest"
+4. Pushes to repository
+
+### Deploy with ECS
+
+Create an ECS task definition:
+
+```json
+{
+  "family": "helix-production",
+  "networkMode": "awsvpc",
+  "requiresCompatibilities": ["FARGATE"],
+  "cpu": "4096",
+  "memory": "8192",
+  "containerDefinitions": [
+    {
+      "name": "helix-db",
+      "image": "123456789012.dkr.ecr.us-east-1.amazonaws.com/helix-my-production-app:latest",
+      "portMappings": [
+        {
+          "containerPort": 6969,
+          "protocol": "tcp"
+        }
+      ],
+      "environment": [
+        {
+          "name": "OPENAI_API_KEY",
+          "value": "sk-..."
+        }
+      ],
+      "mountPoints": [
+        {
+          "sourceVolume": "helix-data",
+          "containerPath": "/data"
+        }
+      ],
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/helix-production",
+          "awslogs-region": "us-east-1",
+          "awslogs-stream-prefix": "ecs"
+        }
+      }
+    }
+  ],
+  "volumes": [
+    {
+      "name": "helix-data",
+      "efsVolumeConfiguration": {
+        "fileSystemId": "fs-abc123xyz",
+        "transitEncryption": "ENABLED"
+      }
+    }
+  ]
+}
+```
+
+Deploy the service:
+
+```bash
+# Register task definition
+aws ecs register-task-definition --cli-input-json file://task-definition.json
+
+# Create service
+aws ecs create-service \
+  --cluster production \
+  --service-name helix-db \
+  --task-definition helix-production:1 \
+  --desired-count 2 \
+  --launch-type FARGATE \
+  --network-configuration "awsvpcConfiguration={subnets=[subnet-abc123],securityGroups=[sg-xyz789],assignPublicIp=ENABLED}"
+```
+
+## Kubernetes Deployment
+
+### Build Docker image
+
+```bash
+# Build locally or use helix build
+helix build production
+
+# Tag for your registry
+docker tag helix-my-production-app:latest \
+  registry.example.com/helix-my-production-app:v1.0.0
+
+# Push to registry
+docker push registry.example.com/helix-my-production-app:v1.0.0
+```
+
+### Create Kubernetes manifests
+
+**Deployment** (`helix-deployment.yaml`):
+
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: helix-db
+  namespace: production
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: helix-db
+  template:
+    metadata:
+      labels:
+        app: helix-db
+    spec:
+      containers:
+      - name: helix-db
+        image: registry.example.com/helix-my-production-app:v1.0.0
+        ports:
+        - containerPort: 6969
+          name: http
+        env:
+        - name: OPENAI_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: helix-secrets
+              key: openai-api-key
+        - name: EMBEDDING_MODEL
+          value: "openai:text-embedding-3-small"
+        volumeMounts:
+        - name: helix-data
+          mountPath: /data
+        resources:
+          requests:
+            memory: "4Gi"
+            cpu: "2000m"
+          limits:
+            memory: "8Gi"
+            cpu: "4000m"
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 6969
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 6969
+          initialDelaySeconds: 10
+          periodSeconds: 5
+      volumes:
+      - name: helix-data
+        persistentVolumeClaim:
+          claimName: helix-data-pvc
+```
+
+**Service** (`helix-service.yaml`):
+
+```yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: helix-db
+  namespace: production
+spec:
+  selector:
+    app: helix-db
+  ports:
+  - port: 6969
+    targetPort: 6969
+    protocol: TCP
+  type: LoadBalancer
+```
+
+**PersistentVolumeClaim** (`helix-pvc.yaml`):
+
+```yaml
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: helix-data-pvc
+  namespace: production
+spec:
+  accessModes:
+  - ReadWriteOnce
+  resources:
+    requests:
+      storage: 100Gi
+  storageClassName: fast-ssd
+```
+
+**Secret** (`helix-secrets.yaml`):
+
+```yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: helix-secrets
+  namespace: production
+type: Opaque
+stringData:
+  openai-api-key: "sk-..."
+```
+
+### Deploy to Kubernetes
+
+```bash
+# Create namespace
+kubectl create namespace production
+
+# Apply manifests
+kubectl apply -f helix-secrets.yaml
+kubectl apply -f helix-pvc.yaml
+kubectl apply -f helix-deployment.yaml
+kubectl apply -f helix-service.yaml
+
+# Verify deployment
+kubectl get pods -n production
+kubectl get svc -n production
+```
+
+### Monitor deployment
+
+```bash
+# View logs
+kubectl logs -f -l app=helix-db -n production
+
+# Check pod status
+kubectl describe pod -l app=helix-db -n production
+
+# Get service endpoint
+kubectl get svc helix-db -n production
+```
+
+## High Availability Configuration
+
+### Multi-region deployment
+
+Deploy to multiple regions for disaster recovery:
+
+```toml
+[cloud.us-east]
+type = "helix"
+cluster_id = "cluster_us_east"
+region = "us-east-1"
+
+[cloud.eu-west]
+type = "helix"
+cluster_id = "cluster_eu_west"
+region = "eu-west-1"
+
+[cloud.ap-south]
+type = "helix"
+cluster_id = "cluster_ap_south"
+region = "ap-south-1"
+```
+
+Deploy to all regions:
+
+```bash
+helix push us-east
+helix push eu-west
+helix push ap-south
+```
+
+### Load balancing
+
+Use a global load balancer:
+
+```yaml
+# Global load balancer configuration
+apiVersion: networking.gke.io/v1
+kind: MultiClusterService
+metadata:
+  name: helix-db-global
+spec:
+  template:
+    spec:
+      selector:
+        app: helix-db
+      ports:
+      - name: http
+        port: 6969
+```
+
+### Replication
+
+For read replicas, deploy separate instances:
+
+```toml
+[cloud.primary]
+type = "helix"
+cluster_id = "cluster_primary"
+region = "us-east-1"
+
+[cloud.replica-1]
+type = "helix"
+cluster_id = "cluster_replica_1"
+region = "us-west-2"
+
+[cloud.replica-2]
+type = "helix"
+cluster_id = "cluster_replica_2"
+region = "eu-west-1"
+```
+
+## Monitoring and Observability
+
+### Built-in metrics
+
+HelixDB exposes Prometheus-compatible metrics:
+
+```bash
+curl http://localhost:6969/metrics
+```
+
+Key metrics:
+- `helix_requests_total` - Total requests
+- `helix_request_duration_seconds` - Request latency
+- `helix_active_connections` - Active connections
+- `helix_db_size_bytes` - Database size
+- `helix_vector_search_duration_seconds` - Vector search latency
+
+### Prometheus configuration
+
+```yaml
+scrape_configs:
+  - job_name: 'helix-db'
+    static_configs:
+      - targets: ['helix-db:6969']
+    metrics_path: '/metrics'
+    scrape_interval: 15s
+```
+
+### Grafana dashboards
+
+Create dashboards for:
+
+- **Query performance** - Latency percentiles, throughput
+- **Resource usage** - CPU, memory, disk
+- **Vector search** - HNSW performance, recall rates
+- **Error rates** - Failed queries, timeouts
+
+### Log aggregation
+
+Forward logs to centralized logging:
+
+```yaml
+# Fluentd configuration
+<source>
+  @type forward
+  port 24224
+</source>
+
+<match helix.**>
+  @type elasticsearch
+  host elasticsearch.default.svc.cluster.local
+  port 9200
+  index_name helix-logs
+</match>
+```
+
+## Security Best Practices
+
+### TLS/SSL configuration
+
+Terminate SSL at load balancer or use ingress:
+
+```yaml
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: helix-db-ingress
+  annotations:
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"
+spec:
+  tls:
+  - hosts:
+    - api.example.com
+    secretName: helix-tls-secret
+  rules:
+  - host: api.example.com
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: helix-db
+            port:
+              number: 6969
+```
+
+### API authentication
+
+Implement authentication middleware:
+
+```yaml
+env:
+- name: REQUIRE_AUTH
+  value: "true"
+- name: API_KEY_HEADER
+  value: "X-API-Key"
+```
+
+### Network policies
+
+Restrict access to database:
+
+```yaml
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: helix-db-policy
+spec:
+  podSelector:
+    matchLabels:
+      app: helix-db
+  ingress:
+  - from:
+    - podSelector:
+        matchLabels:
+          role: api-gateway
+    ports:
+    - port: 6969
+      protocol: TCP
+```
+
+## Backup and Disaster Recovery
+
+### Automated backups
+
+Schedule regular backups:
+
+```yaml
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: helix-backup
+spec:
+  schedule: "0 2 * * *"  # Daily at 2 AM
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          containers:
+          - name: backup
+            image: helix-backup:latest
+            command:
+            - /bin/sh
+            - -c
+            - |
+              helix backup production
+              aws s3 cp /backups/latest.tar.gz \
+                s3://helix-backups/$(date +%Y%m%d)/
+            volumeMounts:
+            - name: helix-data
+              mountPath: /data
+          restartPolicy: OnFailure
+```
+
+### Point-in-time recovery
+
+Restore from a specific backup:
+
+```bash
+# List available backups
+aws s3 ls s3://helix-backups/
+
+# Download backup
+aws s3 cp s3://helix-backups/20240228/backup.tar.gz ./
+
+# Restore
+helix restore production --from backup.tar.gz
+```
+
+## Performance Optimization
+
+### Resource allocation
+
+Optimize based on workload:
+
+```yaml
+resources:
+  requests:
+    memory: "8Gi"
+    cpu: "4000m"
+  limits:
+    memory: "16Gi"
+    cpu: "8000m"
+```
+
+### Connection pooling
+
+Configure client-side pooling:
+
+```typescript
+const client = new HelixDB({
+  host: "api.example.com",
+  port: 443,
+  ssl: true,
+  pool: {
+    min: 10,
+    max: 100,
+    idleTimeoutMs: 30000,
+  },
+});
+```
+
+### Caching layer
+
+Add Redis for query caching:
+
+```typescript
+import Redis from "ioredis";
+
+const redis = new Redis({
+  host: "redis.default.svc.cluster.local",
+});
+
+async function cachedQuery(queryName, params) {
+  const key = `${queryName}:${JSON.stringify(params)}`;
+  
+  // Check cache
+  const cached = await redis.get(key);
+  if (cached) {
+    return JSON.parse(cached);
+  }
+  
+  // Query database
+  const result = await client.query(queryName, params);
+  
+  // Cache result
+  await redis.setex(key, 300, JSON.stringify(result));
+  
+  return result;
+}
+```
+
+## Cost Optimization
+
+### Right-sizing instances
+
+Monitor resource usage and adjust:
+
+```bash
+# Check current usage
+kubectl top pods -n production
+
+# Adjust resources
+kubectl set resources deployment helix-db \
+  --limits=cpu=4,memory=8Gi \
+  --requests=cpu=2,memory=4Gi \
+  -n production
+```
+
+### Auto-scaling
+
+Configure horizontal pod autoscaling:
+
+```yaml
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: helix-db-hpa
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: helix-db
+  minReplicas: 2
+  maxReplicas: 10
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 70
+  - type: Resource
+    resource:
+      name: memory
+      target:
+        type: Utilization
+        averageUtilization: 80
+```
+
+## Troubleshooting
+
+### Connection issues
+
+Check network connectivity:
+
+```bash
+# Test from within cluster
+kubectl run -it --rm debug --image=curlimages/curl --restart=Never -- \
+  curl http://helix-db:6969/health
+
+# Check DNS resolution
+kubectl run -it --rm debug --image=busybox --restart=Never -- \
+  nslookup helix-db.production.svc.cluster.local
+```
+
+### Performance degradation
+
+Analyze slow queries:
+
+```bash
+# Enable query logging
+kubectl set env deployment/helix-db LOG_LEVEL=debug
+
+# Review logs
+kubectl logs -f deployment/helix-db | grep "slow query"
+```
+
+### Deployment failures
+
+Check pod events:
+
+```bash
+kubectl describe pod <pod-name> -n production
+kubectl logs <pod-name> -n production --previous
+```
+
+## Next Steps
+
+- Optimize [Vector Search](/guides/vector-search) for production workloads
+- Build [RAG Applications](/guides/rag-applications) at scale
+- Implement [MCP Integration](/guides/mcp-integration) for AI agents

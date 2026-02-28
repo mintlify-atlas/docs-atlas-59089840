@@ -1,0 +1,494 @@
+---
+title: 'Query Syntax'
+description: 'Write queries to interact with HelixDB'
+---
+
+## Query Structure
+
+Queries are named, typed functions that execute operations and return results:
+
+```hql
+QUERY QueryName(param1: Type1, param2: Type2) =>
+    // query body
+    RETURN result
+```
+
+<ParamField path="QUERY" type="keyword">
+  Declares a new query function
+</ParamField>
+
+<ParamField path="QueryName" type="identifier">
+  Query name must start with uppercase letter
+</ParamField>
+
+<ParamField path="parameters" type="typed">
+  Comma-separated list of typed parameters
+</ParamField>
+
+<ParamField path="=>" type="operator">
+  Separates signature from body
+</ParamField>
+
+<ParamField path="RETURN" type="keyword">
+  Returns result(s) from the query
+</ParamField>
+
+## Parameter Types
+
+### Required Parameters
+
+```hql
+QUERY GetUser(id: ID, name: String) =>
+    user <- N<User>(id)
+    RETURN user
+```
+
+### Optional Parameters
+
+Use `?` to mark parameters as optional:
+
+```hql
+QUERY SearchUsers(name?: String, age?: I32) =>
+    users <- N<User>
+    RETURN users
+```
+
+## Assignment Operator
+
+Use `<-` to assign results to variables:
+
+<ParamField path="<-" type="operator">
+  Assigns result of right side to variable on left
+</ParamField>
+
+```hql
+QUERY Example() =>
+    user <- N<User>({name: "John"})
+    friends <- user::Out<Knows>
+    count <- friends::COUNT
+    RETURN count
+```
+
+## Creating Entities
+
+### Create Node (AddN)
+
+```hql
+QUERY CreateUser(name: String, age: I32) =>
+    user <- AddN<User>({name: name, age: age})
+    RETURN user
+```
+
+<ParamField path="AddN<Type>" type="operation">
+  Creates a new node of specified type
+</ParamField>
+
+### Create Edge (AddE)
+
+```hql
+QUERY CreateFriendship(userId1: ID, userId2: ID) =>
+    user1 <- N<User>(userId1)
+    user2 <- N<User>(userId2)
+    edge <- AddE<Knows>({since: "2024-01-01"})
+        ::From(user1)
+        ::To(user2)
+    RETURN edge
+```
+
+<ParamField path="AddE<Type>" type="operation">
+  Creates a new edge of specified type
+</ParamField>
+
+<ParamField path="::From()" type="required">
+  Specifies source node (can use ID or variable)
+</ParamField>
+
+<ParamField path="::To()" type="required">
+  Specifies destination node (can use ID or variable)
+</ParamField>
+
+### Create Vector (AddV)
+
+```hql
+QUERY CreateDocument(text: String) =>
+    doc <- AddV<Document>(Embed(text), {content: text})
+    RETURN doc
+```
+
+<ParamField path="AddV<Type>" type="operation">
+  Creates a new vector of specified type
+</ParamField>
+
+<ParamField path="Embed()" type="function">
+  Generates embeddings from text
+</ParamField>
+
+## Querying Entities
+
+### Get by ID
+
+<CodeGroup>
+
+```hql Single ID
+QUERY GetUser(id: ID) =>
+    user <- N<User>(id)
+    RETURN user
+```
+
+```hql Multiple IDs
+QUERY GetUsers(id1: ID, id2: ID) =>
+    users <- N<User>(id1, id2)
+    RETURN users
+```
+
+```hql All of Type
+QUERY GetAllUsers() =>
+    users <- N<User>
+    RETURN users
+```
+
+</CodeGroup>
+
+### Get by Index
+
+Query using indexed fields:
+
+```hql
+QUERY GetUserByEmail(email: String) =>
+    user <- N<User>({email: email})
+    RETURN user
+```
+
+## Filtering
+
+### WHERE Clause
+
+Filter results based on conditions:
+
+```hql
+QUERY GetAdultUsers() =>
+    users <- N<User>::WHERE(_::{age}::GTE(18))
+    RETURN users
+```
+
+<ParamField path="_::" type="operator">
+  Anonymous traversal - references current item in pipeline
+</ParamField>
+
+<ParamField path="{field}" type="accessor">
+  Access field on current item
+</ParamField>
+
+### Comparison Operators
+
+<CodeGroup>
+
+```hql Numeric
+QUERY NumericComparisons(minAge: I32, maxAge: I32) =>
+    users1 <- N<User>::WHERE(_::{age}::GT(minAge))
+    users2 <- N<User>::WHERE(_::{age}::GTE(minAge))
+    users3 <- N<User>::WHERE(_::{age}::LT(maxAge))
+    users4 <- N<User>::WHERE(_::{age}::LTE(maxAge))
+    RETURN users1
+```
+
+```hql Equality
+QUERY EqualityComparisons(name: String) =>
+    users1 <- N<User>::WHERE(_::{name}::EQ(name))
+    users2 <- N<User>::WHERE(_::{name}::NEQ(name))
+    RETURN users1
+```
+
+```hql Contains
+QUERY ContainsExample(tag: String) =>
+    posts <- N<Post>::WHERE(_::{tags}::CONTAINS(tag))
+    RETURN posts
+```
+
+```hql Is In
+QUERY IsInExample(validIds: [ID]) =>
+    users <- N<User>::WHERE(_::ID::IS_IN(validIds))
+    RETURN users
+```
+
+</CodeGroup>
+
+### Boolean Operations
+
+<CodeGroup>
+
+```hql AND
+QUERY GetActiveAdults() =>
+    users <- N<User>::WHERE(
+        AND(
+            _::{age}::GTE(18),
+            _::{active}::EQ(true)
+        )
+    )
+    RETURN users
+```
+
+```hql OR
+QUERY GetYoungOrOld() =>
+    users <- N<User>::WHERE(
+        OR(
+            _::{age}::LT(18),
+            _::{age}::GT(65)
+        )
+    )
+    RETURN users
+```
+
+```hql NOT
+QUERY GetInactiveUsers() =>
+    users <- N<User>::WHERE(!AND(_::{active}::EQ(true)))
+    RETURN users
+```
+
+```hql EXISTS
+QUERY GetUsersWithPosts() =>
+    users <- N<User>::WHERE(EXISTS(N<Post>))
+    RETURN users
+```
+
+</CodeGroup>
+
+## Updating Entities
+
+### Update Operation
+
+```hql
+QUERY UpdateUser(userId: ID, newName: String, newAge: I32) =>
+    user <- N<User>(userId)::UPDATE({name: newName, age: newAge})
+    RETURN user
+```
+
+<ParamField path="UPDATE" type="operation">
+  Updates fields on existing entity
+</ParamField>
+
+### Upsert Operations
+
+<CodeGroup>
+
+```hql UpsertN
+QUERY UpsertUser(email: String, name: String, age: I32) =>
+    existing <- N<User>::WHERE(_::{email}::EQ(email))
+    user <- existing::UpsertN({email: email, name: name, age: age})
+    RETURN user
+```
+
+```hql UpsertE
+QUERY UpsertFriendship(id1: ID, id2: ID, since: String) =>
+    person1 <- N<Person>(id1)
+    person2 <- N<Person>(id2)
+    existing <- E<Knows>
+    edge <- existing::UpsertE({since: since})::From(person1)::To(person2)
+    RETURN edge
+```
+
+```hql UpsertV
+QUERY UpsertDocument(text: String) =>
+    existing <- V<Document>::WHERE(_::{content}::EQ(text))
+    doc <- existing::UpsertV(Embed(text), {content: text})
+    RETURN doc
+```
+
+</CodeGroup>
+
+<ParamField path="UpsertN" type="operation">
+  Updates if exists, creates if not (nodes)
+</ParamField>
+
+<ParamField path="UpsertE" type="operation">
+  Updates if exists, creates if not (edges)
+</ParamField>
+
+<ParamField path="UpsertV" type="operation">
+  Updates if exists, creates if not (vectors)
+</ParamField>
+
+## Deleting Entities
+
+```hql
+QUERY DeleteUser(userId: ID) =>
+    user <- N<User>(userId)
+    DROP user
+    RETURN "User deleted"
+```
+
+<ParamField path="DROP" type="operation">
+  Deletes entity from database
+</ParamField>
+
+## Aggregation
+
+### Count
+
+```hql
+QUERY CountUsers() =>
+    count <- N<User>::COUNT
+    RETURN count
+```
+
+### Group By
+
+```hql
+QUERY GroupUsersByAge() =>
+    grouped <- N<User>::GROUP_BY(age)
+    RETURN grouped
+```
+
+### Aggregate By
+
+```hql
+QUERY AggregateUsers() =>
+    agg <- N<User>::AGGREGATE_BY(age, email)
+    RETURN agg
+```
+
+## Ordering
+
+<CodeGroup>
+
+```hql Ascending
+QUERY GetUsersByAgeAsc() =>
+    users <- N<User>::ORDER<Asc>(_::{age})
+    RETURN users
+```
+
+```hql Descending
+QUERY GetUsersByAgeDesc() =>
+    users <- N<User>::ORDER<Desc>(_::{created_at})
+    RETURN users
+```
+
+</CodeGroup>
+
+## Pagination
+
+### Range
+
+```hql
+QUERY GetUsersPage(offset: I32, limit: I32) =>
+    users <- N<User>::RANGE(offset, limit)
+    RETURN users
+```
+
+### First
+
+```hql
+QUERY GetFirstUser() =>
+    user <- N<User>::FIRST
+    RETURN user
+```
+
+## Control Flow
+
+### FOR Loop
+
+<CodeGroup>
+
+```hql Simple
+QUERY BatchCreate(userIds: [ID]) =>
+    FOR userId IN userIds {
+        user <- N<User>(userId)
+    }
+    RETURN "Done"
+```
+
+```hql Destructuring
+QUERY AddEdges(edges: [{from_id: ID, to_id: ID, since: String}]) =>
+    FOR {from_id, to_id, since} IN edges {
+        AddE<Knows>({since: since})::From(from_id)::To(to_id)
+    }
+    RETURN "Edges added"
+```
+
+```hql Property Access
+QUERY ProcessUsers(users: [{name: String, age: I32}]) =>
+    FOR user.name IN users {
+        AddN<User>({name: user.name})
+    }
+    RETURN "Done"
+```
+
+</CodeGroup>
+
+## Return Statements
+
+### Single Value
+
+```hql
+QUERY GetUser(id: ID) =>
+    user <- N<User>(id)
+    RETURN user
+```
+
+### Multiple Values
+
+```hql
+QUERY GetUserData(id: ID) =>
+    user <- N<User>(id)
+    friends <- user::Out<Knows>
+    RETURN user, friends
+```
+
+### Array Creation
+
+```hql
+QUERY GetAllUsersArray() =>
+    users <- N<User>
+    RETURN [users]
+```
+
+### Object Creation
+
+```hql
+QUERY GetUserObject(id: ID) =>
+    user <- N<User>(id)
+    RETURN {
+        user_data: user,
+        timestamp: "2024-01-01"
+    }
+```
+
+## Complete Example
+
+```hql
+QUERY GetUserWithFriends(userId: ID, minAge?: I32) =>
+    // Get the user
+    user <- N<User>(userId)
+    
+    // Get their friends
+    friendEdges <- user::OutE<Knows>
+    friends <- friendEdges::ToN
+    
+    // Filter by age if provided
+    filtered <- friends::WHERE(
+        minAge ? _::{age}::GTE(minAge) : true
+    )
+    
+    // Sort by name
+    sorted <- filtered::ORDER<Asc>(_::{name})
+    
+    // Get first 10
+    paginated <- sorted::RANGE(0, 10)
+    
+    RETURN {
+        user: user,
+        friends: paginated,
+        count: friends::COUNT
+    }
+```
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Graph Traversals" icon="diagram-project" href="/hql/traversals">
+    Learn advanced graph traversal patterns
+  </Card>
+  <Card title="Vector Search" icon="magnifying-glass" href="/hql/vectors">
+    Query with embeddings and semantic search
+  </Card>
+</CardGroup>

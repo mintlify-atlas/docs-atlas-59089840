@@ -1,0 +1,400 @@
+---
+title: 'TypeScript SDK'
+description: 'Use the official TypeScript SDK to interact with HelixDB'
+---
+
+## Installation
+
+<CodeGroup>
+
+```bash npm
+npm install helix-ts
+```
+
+```bash yarn
+yarn add helix-ts
+```
+
+```bash pnpm
+pnpm add helix-ts
+```
+
+</CodeGroup>
+
+## Quick Start
+
+```typescript
+import HelixDB from "helix-ts";
+
+// Create a new HelixDB client
+const client = new HelixDB();
+
+// Execute a query
+const result = await client.query("getUser", {
+  user_name: "John",
+});
+
+console.log(result);
+```
+
+## Client Configuration
+
+Create a HelixDB client with custom configuration:
+
+```typescript
+import HelixDB from "helix-ts";
+
+// Default configuration (localhost:6969)
+const client = new HelixDB();
+
+// Custom host and port
+const client = new HelixDB({
+  host: "your-helix-instance.com",
+  port: 6969,
+});
+
+// Custom base URL
+const client = new HelixDB({
+  baseURL: "https://your-helix-instance.com:6969",
+});
+```
+
+## Executing Queries
+
+The `query()` method executes your deployed HelixQL queries:
+
+```typescript
+// Query with parameters
+const user = await client.query("getUser", {
+  user_name: "Alice",
+});
+
+// Query without parameters
+const allUsers = await client.query("listUsers", {});
+```
+
+## Complete Examples
+
+### Creating and Querying Nodes
+
+Given this HelixQL schema and queries:
+
+```hql
+N::User {
+    INDEX name: String,
+    age: I32,
+}
+
+QUERY addUser(name: String, age: I32) =>
+    user <- AddN<User>({name: name, age: age})
+    RETURN user
+
+QUERY getUser(user_name: String) =>
+    user <- N<User>({name: user_name})
+    RETURN user
+```
+
+You can interact with them using TypeScript:
+
+```typescript
+import HelixDB from "helix-ts";
+
+const client = new HelixDB();
+
+async function main() {
+  // Add a new user
+  const newUser = await client.query("addUser", {
+    name: "Alice",
+    age: 25,
+  });
+  console.log("Created user:", newUser);
+
+  // Get the user back
+  const user = await client.query("getUser", {
+    user_name: "Alice",
+  });
+  console.log("Retrieved user:", user);
+}
+
+main();
+```
+
+### Creating Edges Between Nodes
+
+Given this HelixQL schema:
+
+```hql
+N::User {
+    INDEX name: String,
+    age: I32,
+}
+
+E::Knows {
+    From: User,
+    To: User,
+    Properties: {
+        since: I32,
+    }
+}
+
+QUERY addFriendship(name1: String, name2: String, since: I32) =>
+    user1 <- N<User>({name: name1})
+    user2 <- N<User>({name: name2})
+    edge <- AddE<Knows>({since: since})::From(user1)::To(user2)
+    RETURN edge
+```
+
+Execute it with TypeScript:
+
+```typescript
+const friendship = await client.query("addFriendship", {
+  name1: "Alice",
+  name2: "Bob",
+  since: 2020,
+});
+
+console.log("Created friendship:", friendship);
+```
+
+### Working with Embeddings
+
+Given this HelixQL query with embeddings:
+
+```hql
+V::Chunk {
+    text_content: String,
+    order_in_document: U32,
+    metadata: String,
+    created_at: String,
+}
+
+N::Memory {
+    content: String,
+    title: String,
+    created_at: String,
+}
+
+E::HasChunk {
+    From: Memory,
+    To: Chunk,
+    Properties: {
+        similarity_score: F32,
+        created_at: String,
+    }
+}
+
+QUERY addChunkToMemory(
+    text_content: String,
+    order_in_document: U32,
+    metadata: String,
+    created_at: String
+) =>
+    chunk <- AddV<Chunk>(Embed(text_content), {
+        text_content: text_content,
+        order_in_document: order_in_document,
+        metadata: metadata,
+        created_at: created_at
+    })
+    
+    memory <- AddN<Memory>({
+        content: text_content,
+        title: text_content,
+        created_at: created_at,
+    })
+    
+    has_chunk <- AddE<HasChunk>({
+        similarity_score: 0.0,
+        created_at: created_at
+    })::From(memory)::To(chunk)
+    
+    RETURN chunk
+```
+
+Execute it with TypeScript:
+
+```typescript
+const chunk = await client.query("addChunkToMemory", {
+  text_content: "HelixDB is a graph-vector database built in Rust.",
+  order_in_document: 0,
+  metadata: JSON.stringify({ source: "docs" }),
+  created_at: new Date().toISOString(),
+});
+
+console.log("Created chunk:", chunk);
+```
+
+### Vector Search
+
+Given a vector search query:
+
+```hql
+QUERY searchChunks(query_text: String, limit: U32) =>
+    chunks <- VectorSearch<Chunk>(Embed(query_text), limit)
+    RETURN chunks
+```
+
+Execute it with TypeScript:
+
+```typescript
+const results = await client.query("searchChunks", {
+  query_text: "graph database",
+  limit: 10,
+});
+
+console.log("Search results:", results);
+```
+
+## Error Handling
+
+Always handle errors when executing queries:
+
+```typescript
+try {
+  const result = await client.query("getUser", {
+    user_name: "NonExistentUser",
+  });
+  console.log(result);
+} catch (error) {
+  if (error instanceof Error) {
+    console.error("Query failed:", error.message);
+  }
+}
+```
+
+## TypeScript Types
+
+The SDK is fully typed, providing autocomplete and type checking for your queries:
+
+```typescript
+import HelixDB from "helix-ts";
+
+const client = new HelixDB();
+
+// TypeScript will infer the return type based on your query
+const user = await client.query("getUser", {
+  user_name: "Alice", // Type-checked parameter
+});
+```
+
+## Best Practices
+
+### 1. Reuse Client Instances
+
+Create a single client instance and reuse it throughout your application:
+
+```typescript
+// db.ts
+import HelixDB from "helix-ts";
+
+export const db = new HelixDB();
+
+// app.ts
+import { db } from "./db";
+
+const user = await db.query("getUser", { user_name: "Alice" });
+```
+
+### 2. Environment Variables
+
+Use environment variables for configuration:
+
+```typescript
+import HelixDB from "helix-ts";
+
+const client = new HelixDB({
+  host: process.env.HELIX_HOST || "localhost",
+  port: parseInt(process.env.HELIX_PORT || "6969"),
+});
+```
+
+### 3. Error Boundaries
+
+Wrap query calls in try-catch blocks:
+
+```typescript
+async function getUser(name: string) {
+  try {
+    return await client.query("getUser", { user_name: name });
+  } catch (error) {
+    console.error("Failed to fetch user:", error);
+    return null;
+  }
+}
+```
+
+## Next.js Integration
+
+Use HelixDB in Next.js API routes:
+
+```typescript
+// app/api/users/route.ts
+import { NextRequest, NextResponse } from "next/server";
+import HelixDB from "helix-ts";
+
+const client = new HelixDB();
+
+export async function GET(request: NextRequest) {
+  try {
+    const searchParams = request.nextUrl.searchParams;
+    const name = searchParams.get("name");
+
+    if (!name) {
+      return NextResponse.json(
+        { error: "Name parameter required" },
+        { status: 400 }
+      );
+    }
+
+    const user = await client.query("getUser", { user_name: name });
+    return NextResponse.json(user);
+  } catch (error) {
+    return NextResponse.json(
+      { error: "Failed to fetch user" },
+      { status: 500 }
+    );
+  }
+}
+```
+
+## Express.js Integration
+
+Use HelixDB with Express:
+
+```typescript
+import express from "express";
+import HelixDB from "helix-ts";
+
+const app = express();
+const client = new HelixDB();
+
+app.use(express.json());
+
+app.get("/api/users/:name", async (req, res) => {
+  try {
+    const user = await client.query("getUser", {
+      user_name: req.params.name,
+    });
+    res.json(user);
+  } catch (error) {
+    res.status(500).json({ error: "Failed to fetch user" });
+  }
+});
+
+app.post("/api/users", async (req, res) => {
+  try {
+    const { name, age } = req.body;
+    const user = await client.query("addUser", { name, age });
+    res.status(201).json(user);
+  } catch (error) {
+    res.status(500).json({ error: "Failed to create user" });
+  }
+});
+
+app.listen(3000);
+```
+
+## Resources
+
+- [GitHub Repository](https://github.com/HelixDB/helix-ts)
+- [HelixQL Query Language](/documentation/hql/hql)
+- [SDK Overview](/sdks/overview)

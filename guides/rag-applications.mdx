@@ -1,0 +1,440 @@
+---
+title: Building RAG Applications
+description: Build production-ready RAG applications with HelixDB's integrated vector search and graph traversals
+---
+
+## Overview
+
+HelixDB combines vector embeddings, graph relationships, and full-text search in a single query, making it ideal for building Retrieval-Augmented Generation (RAG) applications. This guide shows you how to build a complete RAG system with semantic search, contextual traversals, and hybrid ranking.
+
+## Architecture
+
+A typical RAG application with HelixDB includes:
+
+- **Document ingestion** with automatic chunking and embedding
+- **Hybrid search** combining vector similarity and BM25 keyword matching
+- **Graph traversals** to retrieve related context
+- **Ranking and filtering** to return the most relevant results
+
+## Document Ingestion
+
+<Steps>
+
+### Create document nodes with embeddings
+
+First, chunk your documents and create nodes with vector embeddings:
+
+```rust
+use helix_db::{embed, HelixDB};
+use std::sync::Arc;
+
+let db = Arc::new(HelixDB::new("./data", None).await?);
+
+// Chunk document into sections
+let chunks = vec![
+    "HelixDB is a multi-model database that combines graphs and vectors.",
+    "It uses HNSW indexing for fast approximate nearest neighbor search.",
+    "Graph traversals enable contextual retrieval beyond simple similarity."
+];
+
+let txn = db.write_txn()?;
+let arena = bumpalo::Bump::new();
+
+for (idx, chunk) in chunks.iter().enumerate() {
+    // Generate embedding using built-in provider
+    let embedding = embed!(db, chunk)?;
+    
+    // Create document chunk node
+    let mut properties = std::collections::HashMap::new();
+    properties.insert("text", Value::String(chunk.to_string()));
+    properties.insert("chunk_id", Value::I32(idx as i32));
+    properties.insert("doc_id", Value::String("doc_1".to_string()));
+    
+    let immutable_props = ImmutablePropertiesMap::from_hash_map(
+        properties,
+        &arena
+    )?;
+    
+    // Insert vector with properties
+    G::new(&db.storage, &txn, &arena)
+        .insert_v::<fn(&HVector, &RoTxn) -> bool>(
+            &embedding,
+            "document_chunk",
+            Some(immutable_props),
+        )
+        .collect()?;
+}
+
+txn.commit()?;
+```
+
+### Link chunks to parent documents
+
+Create relationships between chunks and their source documents:
+
+```rust
+// Create parent document node
+let doc_props = {
+    let mut props = std::collections::HashMap::new();
+    props.insert("title", Value::String("HelixDB Guide".to_string()));
+    props.insert("doc_id", Value::String("doc_1".to_string()));
+    props.insert("author", Value::String("Engineering Team".to_string()));
+    ImmutablePropertiesMap::from_hash_map(props, &arena)?
+};
+
+let doc_node = G::new(&db.storage, &txn, &arena)
+    .add_n("document", Some(doc_props))
+    .collect()?;
+
+// Link all chunks to parent document
+let chunks = G::new(&db.storage, &txn, &arena)
+    .n_from_type("document_chunk")
+    .filter(|chunk| {
+        chunk.get_property("doc_id")
+            .map(|v| v == &Value::String("doc_1".to_string()))
+            .unwrap_or(false)
+    })
+    .collect()?;
+
+for chunk in chunks {
+    G::new(&db.storage, &txn, &arena)
+        .add_e(
+            chunk.id(),
+            doc_node[0].id(),
+            "belongs_to",
+            None
+        )
+        .collect()?;
+}
+```
+
+</Steps>
+
+## Semantic Search
+
+### Vector similarity search
+
+Perform semantic search using HNSW indexing:
+
+```rust
+use helix_db::helix_engine::traversal_core::ops::vectors::search::SearchVAdapter;
+
+let query = "How does HelixDB handle vector search?";
+let query_embedding = embed!(db, query)?;
+
+let txn = db.read_txn()?;
+let arena = bumpalo::Bump::new();
+
+// Search for top 10 most similar chunks
+let results = G::new(&db.storage, &txn, &arena)
+    .search_v::<fn(&HVector, &RoTxn) -> bool, _>(
+        &query_embedding,
+        10,  // k nearest neighbors
+        "document_chunk",
+        None  // no filter
+    )
+    .collect()?;
+
+for result in results {
+    if let TraversalValue::Vector(vec) = result {
+        let text = vec.get_property("text")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        let score = vec.get_distance();
+        println!("Score: {:.4} | Text: {}", score, text);
+    }
+}
+```
+
+### Filter by metadata
+
+Combine vector search with property filters:
+
+```rust
+// Define filter function
+let doc_id_filter = |vector: &HVector, _txn: &RoTxn| -> bool {
+    vector.get_property("doc_id")
+        .map(|v| v == &Value::String("doc_1".to_string()))
+        .unwrap_or(false)
+};
+
+let filters = [doc_id_filter];
+
+// Search with filter
+let filtered_results = G::new(&db.storage, &txn, &arena)
+    .search_v::<_, _>(
+        &query_embedding,
+        10,
+        "document_chunk",
+        Some(&filters)
+    )
+    .collect()?;
+```
+
+## Hybrid Search
+
+Combine vector similarity with BM25 keyword search:
+
+```rust
+use helix_db::helix_engine::traversal_core::ops::bm25::search_bm25::SearchBM25Adapter;
+
+// Vector search results
+let vector_results = G::new(&db.storage, &txn, &arena)
+    .search_v::<fn(&HVector, &RoTxn) -> bool, _>(
+        &query_embedding,
+        10,
+        "document_chunk",
+        None
+    )
+    .collect()?;
+
+// BM25 keyword search results
+let keyword_results = G::new(&db.storage, &txn, &arena)
+    .search_bm25("document_chunk", query, 10)?
+    .collect()?;
+
+// Combine and re-rank results
+let mut combined_scores: std::collections::HashMap<u128, f64> = 
+    std::collections::HashMap::new();
+
+for result in vector_results {
+    if let TraversalValue::Vector(vec) = result {
+        let id = vec.id();
+        let score = vec.get_distance();
+        *combined_scores.entry(*id).or_insert(0.0) += score * 0.7;
+    }
+}
+
+for result in keyword_results {
+    match result {
+        TraversalValue::NodeWithScore { node, score } => {
+            let id = node.id();
+            *combined_scores.entry(*id).or_insert(0.0) += score * 0.3;
+        }
+        _ => {}
+    }
+}
+
+// Sort by combined score
+let mut ranked: Vec<_> = combined_scores.into_iter().collect();
+ranked.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+```
+
+## Contextual Retrieval
+
+Use graph traversals to gather related context:
+
+```rust
+// Start with top search results
+let top_chunks = G::new(&db.storage, &txn, &arena)
+    .search_v::<fn(&HVector, &RoTxn) -> bool, _>(
+        &query_embedding,
+        5,
+        "document_chunk",
+        None
+    );
+
+// Traverse to parent documents
+let documents = top_chunks
+    .out_node("belongs_to")
+    .dedup()
+    .collect()?;
+
+// Get all chunks from those documents
+let expanded_context = G::new(&db.storage, &txn, &arena)
+    .from_iter(documents.into_iter(), &arena)
+    .in_vec("belongs_to", true)
+    .order_by_asc(|val| {
+        val.get_property("chunk_id").cloned().unwrap_or(Value::I32(0))
+    })
+    .collect()?;
+
+// Now you have ordered chunks from relevant documents
+for chunk in expanded_context {
+    if let TraversalValue::Vector(vec) = chunk {
+        let text = vec.get_property("text")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        println!("Context: {}", text);
+    }
+}
+```
+
+## Advanced Patterns
+
+### Multi-hop traversals
+
+Retrieve related entities through multiple relationships:
+
+```rust
+// Find related documents through citations
+let related_docs = G::new(&db.storage, &txn, &arena)
+    .search_v::<fn(&HVector, &RoTxn) -> bool, _>(
+        &query_embedding,
+        5,
+        "document_chunk",
+        None
+    )
+    .out_node("belongs_to")           // Parent document
+    .out_node("cites")                // Cited documents
+    .in_vec("belongs_to", true)       // Chunks from cited docs
+    .dedup()
+    .collect()?;
+```
+
+### Time-aware retrieval
+
+Filter results by temporal properties:
+
+```rust
+let recent_filter = |vector: &HVector, _txn: &RoTxn| -> bool {
+    if let Some(Value::I64(timestamp)) = vector.get_property("created_at") {
+        let thirty_days_ago = chrono::Utc::now().timestamp() - (30 * 24 * 60 * 60);
+        *timestamp > thirty_days_ago
+    } else {
+        false
+    }
+};
+
+let recent_results = G::new(&db.storage, &txn, &arena)
+    .search_v::<_, _>(
+        &query_embedding,
+        10,
+        "document_chunk",
+        Some(&[recent_filter])
+    )
+    .collect()?;
+```
+
+### Aggregation and analytics
+
+Analyze retrieval patterns:
+
+```rust
+use helix_db::helix_engine::traversal_core::ops::util::aggregate::AggregateAdapter;
+
+// Count chunks by document
+let doc_distribution = G::new(&db.storage, &txn, &arena)
+    .search_v::<fn(&HVector, &RoTxn) -> bool, _>(
+        &query_embedding,
+        50,
+        "document_chunk",
+        None
+    )
+    .aggregate_by(&["doc_id"], true)?
+    .into_count();
+
+println!("Documents in results: {:?}", doc_distribution);
+```
+
+## Production Considerations
+
+### Connection pooling
+
+Use Arc for thread-safe database access:
+
+```rust
+use std::sync::Arc;
+
+let db = Arc::new(HelixDB::new("./data", None).await?);
+let db_clone = Arc::clone(&db);
+
+// Use in async handler
+tokio::spawn(async move {
+    let query = "search query";
+    let results = perform_rag_search(&db_clone, query).await?;
+    Ok::<_, Error>(results)
+});
+```
+
+### Caching strategies
+
+Cache frequently accessed embeddings:
+
+```rust
+use lru::LruCache;
+use std::sync::Mutex;
+
+struct EmbeddingCache {
+    cache: Mutex<LruCache<String, Vec<f64>>>,
+}
+
+impl EmbeddingCache {
+    fn get_or_compute(&self, text: &str, db: &HelixDB) -> Result<Vec<f64>> {
+        let mut cache = self.cache.lock().unwrap();
+        
+        if let Some(embedding) = cache.get(text) {
+            return Ok(embedding.clone());
+        }
+        
+        let embedding = embed!(db, text)?;
+        cache.put(text.to_string(), embedding.clone());
+        Ok(embedding)
+    }
+}
+```
+
+### Error handling
+
+Implement robust error handling:
+
+```rust
+#[derive(Debug)]
+enum RagError {
+    DatabaseError(GraphError),
+    EmbeddingError(String),
+    NoResultsFound,
+}
+
+impl From<GraphError> for RagError {
+    fn from(err: GraphError) -> Self {
+        RagError::DatabaseError(err)
+    }
+}
+
+async fn perform_rag_query(
+    db: &HelixDB,
+    query: &str,
+    k: usize,
+) -> Result<Vec<String>, RagError> {
+    let embedding = embed!(db, query)
+        .map_err(|e| RagError::EmbeddingError(e.to_string()))?;
+    
+    let txn = db.read_txn()?;
+    let arena = bumpalo::Bump::new();
+    
+    let results = G::new(&db.storage, &txn, &arena)
+        .search_v::<fn(&HVector, &RoTxn) -> bool, _>(
+            &embedding,
+            k,
+            "document_chunk",
+            None
+        )
+        .collect()?;
+    
+    if results.is_empty() {
+        return Err(RagError::NoResultsFound);
+    }
+    
+    let texts: Vec<String> = results
+        .into_iter()
+        .filter_map(|r| {
+            if let TraversalValue::Vector(vec) = r {
+                vec.get_property("text")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string())
+            } else {
+                None
+            }
+        })
+        .collect();
+    
+    Ok(texts)
+}
+```
+
+## Next Steps
+
+- Learn about [Vector Search](/guides/vector-search) for optimization techniques
+- Explore [Graph Traversals](/guides/graph-traversals) for complex queries
+- See [Built-in Embeddings](/guides/embeddings) for provider configuration

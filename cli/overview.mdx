@@ -1,0 +1,184 @@
+---
+title: CLI Overview
+description: Introduction to the Helix CLI and common usage patterns
+---
+
+The Helix CLI is the primary tool for managing HelixDB projects, instances, and deployments. It provides commands for local development, cloud deployment, and instance management.
+
+## Installation
+
+The Helix CLI can be installed via the installation script or package managers:
+
+```bash
+curl -sSL https://install.helix-db.com | sh
+```
+
+## Global Flags
+
+All commands support these global flags:
+
+<ParamField path="--quiet" type="boolean">
+  Suppress output (errors and final result only)
+</ParamField>
+
+<ParamField path="--verbose" type="boolean" default="false">
+  Show detailed output with timing information
+</ParamField>
+
+## Project Structure
+
+A typical Helix project has the following structure:
+
+```
+my-project/
+├── helix.toml          # Project configuration
+├── db/                 # Query files directory
+│   ├── schema.hx      # Schema definitions
+│   └── queries.hx     # Query definitions
+└── .helix/            # Instance workspaces (auto-generated)
+    └── dev/
+```
+
+## Common Workflows
+
+### Local Development
+
+<Steps>
+  <Step title="Initialize a new project">
+    Create a new Helix project in the current directory:
+    ```bash
+    helix init
+    ```
+  </Step>
+
+  <Step title="Build and deploy locally">
+    Build your queries and start a local instance:
+    ```bash
+    helix push dev
+    ```
+  </Step>
+
+  <Step title="Check status">
+    View the status of all instances:
+    ```bash
+    helix status
+    ```
+  </Step>
+
+  <Step title="View logs">
+    Monitor your instance logs:
+    ```bash
+    helix logs dev
+    ```
+  </Step>
+</Steps>
+
+### Cloud Deployment
+
+<Steps>
+  <Step title="Authenticate">
+    Log in to Helix Cloud:
+    ```bash
+    helix auth login
+    ```
+  </Step>
+
+  <Step title="Initialize with cloud">
+    Create a new cloud-deployed project:
+    ```bash
+    helix init cloud
+    ```
+  </Step>
+
+  <Step title="Deploy to cloud">
+    Push your project to Helix Cloud:
+    ```bash
+    helix push production
+    ```
+  </Step>
+
+  <Step title="Sync changes">
+    Pull changes from your cloud instance:
+    ```bash
+    helix sync production
+    ```
+  </Step>
+</Steps>
+
+## Instance Types
+
+Helix supports multiple instance types:
+
+### Local Instances
+
+Local instances run in Docker containers on your machine. They're ideal for development and testing.
+
+```toml
+[local.dev]
+port = 6969
+```
+
+### Helix Cloud Instances
+
+Managed instances on Helix Cloud with automatic scaling and high availability.
+
+```toml
+[cloud.production]
+type = "helix"
+cluster_id = "cluster_abc123"
+region = "us-east-1"
+build_mode = "release"
+```
+
+### Enterprise Instances
+
+High-availability enterprise deployments with custom node configurations.
+
+```toml
+[enterprise.prod-ha]
+cluster_id = "cluster_xyz789"
+availability_mode = "ha"
+gateway_node_type = "c5.2xlarge"
+db_node_type = "r5.4xlarge"
+min_instances = 3
+max_instances = 10
+```
+
+## Configuration File
+
+The `helix.toml` file configures your project:
+
+```toml
+[project]
+name = "my-project"
+queries = "./db/"
+container_runtime = "docker"
+
+[local.dev]
+port = 6969
+
+[cloud.production]
+type = "helix"
+cluster_id = "YOUR_CLUSTER_ID"
+region = "us-east-1"
+build_mode = "release"
+```
+
+## Getting Help
+
+Get help for any command:
+
+```bash
+helix --help
+helix <command> --help
+```
+
+## Update the CLI
+
+Keep your CLI up to date:
+
+```bash
+helix update
+```
+
+The CLI automatically checks for updates and notifies you when a new version is available.

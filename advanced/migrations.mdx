@@ -1,0 +1,777 @@
+---
+title: 'Schema Migrations'
+description: 'Schema evolution and data migration strategies for HelixDB'
+icon: 'arrows-rotate'
+---
+
+## Overview
+
+HelixDB supports schema evolution through versioned schemas and migration definitions. This enables you to evolve your data model over time while maintaining existing data.
+
+## Schema Versioning
+
+### Defining Schemas
+
+Schemas are versioned using the `schema::N` syntax:
+
+```hql
+schema::1 {
+  N::User {
+    name: String,
+    email: String
+  }
+  
+  E::FOLLOWS {
+    From: User,
+    To: User
+  }
+}
+```
+
+<ParamField path="schema::version" type="integer" required>
+  Schema version number. Must be sequential (1, 2, 3, ...).
+</ParamField>
+
+### Multiple Schema Versions
+
+Define multiple versions in the same file:
+
+```hql
+schema::1 {
+  N::User {
+    name: String
+  }
+}
+
+schema::2 {
+  N::User {
+    name: String,
+    email: String,
+    created_at: Date DEFAULT NOW
+  }
+}
+
+schema::3 {
+  N::User {
+    name: String,
+    email: String,
+    created_at: Date DEFAULT NOW,
+    last_login: Date
+  }
+}
+```
+
+<Info>
+  Schema structures: `/home/daytona/workspace/source/helix-db/src/helixc/parser/types.rs:70-77`
+</Info>
+
+## Migration Syntax
+
+### Basic Migration
+
+Migrations transform data from one schema version to another:
+
+```hql
+MIGRATION schema::1 => schema::2 {
+  N::User => N::User {
+    email: "unknown@example.com"
+  }
+}
+```
+
+<ParamField path="MIGRATION" type="keyword">
+  **Syntax**: `MIGRATION schema::N => schema::M { ... }`
+  
+  **from_version**: Source schema version
+  
+  **to_version**: Target schema version
+  
+  **body**: Mapping definitions
+</ParamField>
+
+<Info>
+  Migration grammar: `/home/daytona/workspace/source/helix-db/src/grammar.pest:29-48`
+</Info>
+
+### Item Mapping
+
+Map entities between schema versions:
+
+```hql
+MIGRATION schema::1 => schema::2 {
+  // Map User to User with new field
+  N::User => N::User {
+    email: "default@example.com",
+    created_at: NOW
+  }
+  
+  // Map Edge with properties
+  E::FOLLOWS => E::FOLLOWS {
+    Properties: {
+      followed_at: NOW
+    }
+  }
+}
+```
+
+<ParamField path="item_mapping" type="syntax">
+  **Format**: `Type::Name => Type::Name { field_mappings }`
+  
+  **Source**: Entity type and name from old schema
+  
+  **Target**: Entity type and name in new schema
+  
+  **Mappings**: Field transformations
+</ParamField>
+
+## Field Migrations
+
+### Add New Fields
+
+Provide default values for new fields:
+
+```hql
+schema::1 {
+  N::User {
+    name: String
+  }
+}
+
+schema::2 {
+  N::User {
+    name: String,
+    email: String,
+    age: I32,
+    created_at: Date
+  }
+}
+
+MIGRATION schema::1 => schema::2 {
+  N::User => N::User {
+    email: "unknown@example.com",  // Literal default
+    age: 0,                         // Integer default
+    created_at: NOW                 // Current timestamp
+  }
+}
+```
+
+### Rename Fields
+
+Map old field names to new:
+
+```hql
+schema::1 {
+  N::User {
+    full_name: String
+  }
+}
+
+schema::2 {
+  N::User {
+    first_name: String,
+    last_name: String
+  }
+}
+
+MIGRATION schema::1 => schema::2 {
+  N::User => N::User {
+    first_name: full_name,  // Copy old value
+    last_name: ""           // Empty default
+  }
+}
+```
+
+### Type Casting
+
+Convert field types:
+
+```hql
+schema::1 {
+  N::Product {
+    price: String  // Originally stored as string
+  }
+}
+
+schema::2 {
+  N::Product {
+    price: F64     // Convert to float
+  }
+}
+
+MIGRATION schema::1 => schema::2 {
+  N::Product => N::Product {
+    price: price AS F64  // Cast string to F64
+  }
+}
+```
+
+<ParamField path="AS" type="cast operator">
+  **Syntax**: `field_name AS Type`
+  
+  **Supported casts**:
+  - String to numeric types
+  - Numeric types between each other
+  - String to Date
+  - Integer to Date (Unix timestamp)
+</ParamField>
+
+<Info>
+  Type casting: `/home/daytona/workspace/source/helix-db/src/helixc/parser/types.rs:157-160`
+</Info>
+
+### Remove Fields
+
+Simply omit fields from new schema:
+
+```hql
+schema::1 {
+  N::User {
+    name: String,
+    deprecated_field: String,
+    email: String
+  }
+}
+
+schema::2 {
+  N::User {
+    name: String,
+    email: String
+    // deprecated_field removed
+  }
+}
+
+MIGRATION schema::1 => schema::2 {
+  N::User => N::User {
+    // No mention of deprecated_field
+    // It will be dropped automatically
+  }
+}
+```
+
+<Note>
+  Fields not mentioned in the migration are dropped from the target schema.
+</Note>
+
+## Entity Migrations
+
+### Rename Entity Types
+
+Map old entity types to new:
+
+```hql
+schema::1 {
+  N::Customer {
+    name: String,
+    email: String
+  }
+}
+
+schema::2 {
+  N::User {
+    name: String,
+    email: String,
+    type: String DEFAULT "customer"
+  }
+}
+
+MIGRATION schema::1 => schema::2 {
+  N::Customer => N::User {
+    type: "customer"
+  }
+}
+```
+
+### Delete Entity Types
+
+Map to anonymous type to delete:
+
+```hql
+schema::1 {
+  N::TempData {
+    value: String
+  }
+  
+  N::User {
+    name: String
+  }
+}
+
+schema::2 {
+  N::User {
+    name: String
+  }
+  // TempData removed
+}
+
+MIGRATION schema::1 => schema::2 {
+  N::TempData => _:: {}  // Delete all TempData nodes
+  
+  N::User => N::User {}  // Keep users as-is
+}
+```
+
+<ParamField path="_::" type="anonymous">
+  Anonymous entity type. Entities mapped to `_::` are deleted.
+</ParamField>
+
+<Info>
+  Anonymous declaration: `/home/daytona/workspace/source/helix-db/src/grammar.pest:35`
+</Info>
+
+### Split Entity Types
+
+Create multiple entities from one:
+
+```hql
+schema::1 {
+  N::Person {
+    name: String,
+    type: String,  // "employee" or "customer"
+    email: String
+  }
+}
+
+schema::2 {
+  N::Employee {
+    name: String,
+    email: String
+  }
+  
+  N::Customer {
+    name: String,
+    email: String
+  }
+}
+
+MIGRATION schema::1 => schema::2 {
+  // Map based on type field (requires conditional logic in app)
+  N::Person => N::Employee {
+    // Filter: type == "employee"
+  }
+  
+  N::Person => N::Customer {
+    // Filter: type == "customer"
+  }
+}
+```
+
+<Warning>
+  Conditional migrations are not yet supported in migration syntax. Use application-level migration for complex transformations.
+</Warning>
+
+## Edge Migrations
+
+### Update Edge Properties
+
+```hql
+schema::1 {
+  E::RATED {
+    From: User,
+    To: Movie,
+    Properties: {
+      score: I32
+    }
+  }
+}
+
+schema::2 {
+  E::RATED {
+    From: User,
+    To: Movie,
+    Properties: {
+      score: I32,
+      review: String,
+      rated_at: Date
+    }
+  }
+}
+
+MIGRATION schema::1 => schema::2 {
+  E::RATED => E::RATED {
+    Properties: {
+      review: "",        // Empty default
+      rated_at: NOW      // Current timestamp
+    }
+  }
+}
+```
+
+### Change Edge Endpoints
+
+```hql
+schema::1 {
+  E::AUTHORED {
+    From: User,
+    To: Article
+  }
+}
+
+schema::2 {
+  E::CREATED {
+    From: Author,  // Renamed from User
+    To: Content    // Renamed from Article
+  }
+}
+
+MIGRATION schema::1 => schema::2 {
+  N::User => N::Author {}
+  N::Article => N::Content {}
+  E::AUTHORED => E::CREATED {}
+}
+```
+
+## Vector Migrations
+
+### Update Vector Metadata
+
+```hql
+schema::1 {
+  V::DocEmbedding {
+    document_id: ID
+  }
+}
+
+schema::2 {
+  V::DocEmbedding {
+    document_id: ID,
+    model_version: String,
+    indexed_at: Date
+  }
+}
+
+MIGRATION schema::1 => schema::2 {
+  V::DocEmbedding => V::DocEmbedding {
+    model_version: "v1",
+    indexed_at: NOW
+  }
+}
+```
+
+<Note>
+  Vector embeddings themselves are not migrated - only metadata fields. To update embeddings, regenerate them in your application.
+</Note>
+
+## Migration Execution
+
+### Automatic Migration
+
+HelixDB automatically migrates data on database open:
+
+```rust
+use helix_db::storage_core::HelixGraphStorage;
+
+// Load schema with migrations
+let schema = include_str!("schema.hql");
+
+// Open database - migrations run automatically
+let storage = HelixGraphStorage::new(
+    "/path/to/db",
+    config,
+    version_info,
+)?;
+
+// Database is now at latest schema version
+```
+
+<Info>
+  Migration execution: `/home/daytona/workspace/source/helix-db/src/helix_engine/storage_core/storage_migration.rs:16-43`
+</Info>
+
+### Migration Process
+
+1. **Detect current version**: Read stored schema version from database
+2. **Find migration path**: Determine sequence of migrations needed
+3. **Apply migrations**: Execute each migration in order
+4. **Update version**: Store new schema version
+5. **Verify data**: Check data integrity (optional)
+
+```rust
+pub fn migrate(storage: &mut HelixGraphStorage) -> Result<(), GraphError> {
+    let mut metadata = read_current_metadata(storage)?;
+    
+    loop {
+        metadata = match metadata {
+            // Apply next migration
+            StorageMetadata::Version(v) => {
+                if v >= target_version {
+                    break;  // Done
+                }
+                apply_migration(storage, v, v + 1)?
+            }
+        };
+    }
+    
+    Ok(())
+}
+```
+
+### Rollback
+
+<Warning>
+  HelixDB does not support automatic rollback. Always backup before migrations.
+</Warning>
+
+**Manual rollback process**:
+1. Stop application
+2. Restore from backup
+3. Fix migration definition
+4. Restart application
+
+## Migration Strategies
+
+### Additive Changes (Safe)
+
+Adding fields with defaults is safe:
+
+```hql
+// Safe: Add new optional fields
+schema::2 {
+  N::User {
+    name: String,
+    email: String,           // New field
+    created_at: Date DEFAULT NOW  // New with default
+  }
+}
+
+MIGRATION schema::1 => schema::2 {
+  N::User => N::User {
+    email: "unknown@example.com"
+  }
+}
+```
+
+**Characteristics**:
+- No data loss
+- Backward compatible for reads
+- Can be applied online
+
+### Destructive Changes (Risky)
+
+Removing or renaming fields without proper migration:
+
+```hql
+// Risky: Removing field
+schema::2 {
+  N::User {
+    name: String
+    // email removed - data will be lost!
+  }
+}
+
+MIGRATION schema::1 => schema::2 {
+  N::User => N::User {}  // email data discarded
+}
+```
+
+**Mitigation**:
+1. Export data before migration
+2. Verify migration logic
+3. Test on copy of production data
+4. Have rollback plan
+
+### Phased Migrations
+
+Break complex migrations into phases:
+
+**Phase 1: Add new field**
+```hql
+schema::2 {
+  N::User {
+    old_field: String,
+    new_field: String  // Add alongside old
+  }
+}
+
+MIGRATION schema::1 => schema::2 {
+  N::User => N::User {
+    new_field: old_field  // Copy data
+  }
+}
+```
+
+**Phase 2: Populate new field** (in application)
+```rust
+// Update application to write to both fields
+AddN<User>({
+    old_field: value,
+    new_field: value,
+})
+```
+
+**Phase 3: Remove old field**
+```hql
+schema::3 {
+  N::User {
+    new_field: String  // Remove old_field
+  }
+}
+
+MIGRATION schema::2 => schema::3 {
+  N::User => N::User {}  // Keep new_field
+}
+```
+
+## Application-Level Migrations
+
+For complex transformations, use application code:
+
+```rust
+fn migrate_user_data(storage: &mut HelixGraphStorage) -> Result<(), Error> {
+    let mut wtxn = storage.graph_env.write_txn()?;
+    
+    // Read all users
+    let users = storage.get_all_nodes_of_type(&wtxn, "User")?;
+    
+    for user in users {
+        // Complex transformation
+        let new_data = transform_user_data(user)?;
+        
+        // Update user
+        storage.update_node(&mut wtxn, user.id, new_data)?;
+    }
+    
+    wtxn.commit()?;
+    Ok(())
+}
+
+fn transform_user_data(user: Node) -> Result<HashMap<String, Value>, Error> {
+    let mut new_data = HashMap::new();
+    
+    // Complex logic
+    if let Some(full_name) = user.get_property("full_name") {
+        let parts: Vec<&str> = full_name.as_str()?.split(' ').collect();
+        new_data.insert("first_name".to_string(), Value::from(parts[0]));
+        new_data.insert("last_name".to_string(), Value::from(parts.last()?));
+    }
+    
+    Ok(new_data)
+}
+```
+
+## Testing Migrations
+
+### Test Strategy
+
+1. **Create test database** with old schema
+2. **Populate with test data**
+3. **Run migration**
+4. **Verify results**
+
+```rust
+#[test]
+fn test_user_migration() {
+    // Create test DB with schema v1
+    let storage = create_test_db("schema::1");
+    
+    // Add test data
+    add_test_users(&storage);
+    
+    // Apply migration
+    migrate_to_version(&storage, 2)?;
+    
+    // Verify results
+    let users = storage.get_all_nodes_of_type("User")?;
+    for user in users {
+        assert!(user.has_property("email"));
+        assert!(user.has_property("created_at"));
+    }
+}
+```
+
+### Migration Checklist
+
+<AccordionGroup>
+  <Accordion title="Before migration">
+    - [ ] Backup production database
+    - [ ] Test migration on copy of production data
+    - [ ] Verify migration logic
+    - [ ] Document rollback procedure
+    - [ ] Estimate migration time
+    - [ ] Plan maintenance window
+  </Accordion>
+  
+  <Accordion title="During migration">
+    - [ ] Stop application
+    - [ ] Run migration
+    - [ ] Verify data integrity
+    - [ ] Check migration logs
+    - [ ] Test critical queries
+    - [ ] Restart application
+  </Accordion>
+  
+  <Accordion title="After migration">
+    - [ ] Monitor application performance
+    - [ ] Verify business functionality
+    - [ ] Check error rates
+    - [ ] Document any issues
+    - [ ] Keep backup for rollback period
+  </Accordion>
+</AccordionGroup>
+
+## Best Practices
+
+<AccordionGroup>
+  <Accordion title="Always backup before migrations">
+    ```bash
+    # Create timestamped backup
+    helix-backup /data/helix.db /backups/helix-$(date +%Y%m%d-%H%M%S).db
+    ```
+  </Accordion>
+  
+  <Accordion title="Test migrations thoroughly">
+    - Test on realistic data volumes
+    - Test edge cases
+    - Verify performance impact
+    - Test rollback procedure
+  </Accordion>
+  
+  <Accordion title="Use additive changes when possible">
+    Add new fields instead of modifying existing ones:
+    ```hql
+    // Good: Additive
+    new_email: String DEFAULT ""
+    
+    // Risky: Modification
+    email: String  // Changed from optional to required
+    ```
+  </Accordion>
+  
+  <Accordion title="Version all schema changes">
+    Every schema change gets a new version:
+    ```hql
+    schema::1 { ... }
+    schema::2 { ... }  // Even minor changes
+    schema::3 { ... }
+    ```
+  </Accordion>
+  
+  <Accordion title="Document migration rationale">
+    ```hql
+    // Migration 1->2: Add email field for notifications
+    // Date: 2024-02-28
+    // Reason: Support email notification feature
+    MIGRATION schema::1 => schema::2 {
+      N::User => N::User {
+        email: "unknown@example.com"
+      }
+    }
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## Related
+
+<CardGroup cols={2}>
+  <Card title="Node Definitions" icon="circle-nodes" href="/api/node-definitions">
+    Schema field definitions
+  </Card>
+  <Card title="Edge Definitions" icon="link" href="/api/edge-definitions">
+    Edge schema definitions
+  </Card>
+  <Card title="Storage Engine" icon="hard-drive" href="/advanced/storage-engine">
+    How migrations affect storage
+  </Card>
+  <Card title="Data Types" icon="database" href="/api/data-types">
+    Type casting in migrations
+  </Card>
+</CardGroup>

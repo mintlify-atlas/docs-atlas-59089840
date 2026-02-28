@@ -1,0 +1,716 @@
+---
+title: 'Indexing'
+description: 'Index configuration, types, and optimization in HelixDB'
+icon: 'magnifying-glass'
+---
+
+## Overview
+
+HelixDB provides multiple index types for efficient data access: primary indices (node/edge IDs), secondary indices (INDEX and UNIQUE INDEX), graph indices (edge traversal), and vector indices (HNSW).
+
+## Primary Indices
+
+### Node ID Index
+
+All nodes are indexed by their UUID:
+
+<ParamField path="nodes" type="B+tree">
+  **Key**: 128-bit UUID (big-endian)
+  
+  **Value**: Bincode-serialized node data
+  
+  **Performance**: O(log n) lookup by ID
+  
+  **Usage**:
+  ```hql
+  N({id: "550e8400-e29b-41d4-a716-446655440000"})
+  ```
+</ParamField>
+
+### Edge ID Index
+
+All edges are indexed by their UUID:
+
+<ParamField path="edges" type="B+tree">
+  **Key**: 128-bit UUID (big-endian)
+  
+  **Value**: Bincode-serialized edge data
+  
+  **Performance**: O(log n) lookup by ID
+  
+  **Usage**:
+  ```hql
+  E({id: "650e8400-e29b-41d4-a716-446655440000"})
+  ```
+</ParamField>
+
+## Secondary Indices
+
+Secondary indices enable fast lookups by fields other than ID.
+
+### INDEX
+
+Non-unique secondary index allowing duplicate values:
+
+```hql
+N::User {
+  INDEX role: String,
+  INDEX department: String,
+  name: String
+}
+```
+
+<ParamField path="Implementation" type="LMDB Database">
+  **Database name**: Field name (e.g., "role")
+  
+  **Key**: Serialized field value
+  
+  **Value**: Node UUID
+  
+  **Flags**: `DUP_SORT`
+  
+  **Structure**:
+  ```
+  "admin" -> [uuid1, uuid2, uuid3]
+  "user" -> [uuid4, uuid5, ...]
+  "moderator" -> [uuid6]
+  ```
+</ParamField>
+
+<Info>
+  INDEX implementation: `/home/daytona/workspace/source/helix-db/src/helix_engine/storage_core/mod.rs:159-172`
+</Info>
+
+**Query usage**:
+```hql
+// Efficient: Uses role index
+N<User>({role: "admin"})
+
+// Less efficient: Full scan with filter
+N<User>::WHERE(_.role == "admin")
+```
+
+**Characteristics**:
+- Multiple nodes can have same value
+- Single lookup returns all matching nodes
+- Automatically maintained on insert/update/delete
+
+### UNIQUE INDEX
+
+Unique secondary index preventing duplicate values:
+
+```hql
+N::User {
+  UNIQUE INDEX email: String,
+  UNIQUE INDEX username: String,
+  name: String
+}
+```
+
+<ParamField path="Implementation" type="LMDB Database">
+  **Database name**: Field name (e.g., "email")
+  
+  **Key**: Serialized field value
+  
+  **Value**: Node UUID
+  
+  **Flags**: None (no duplicates)
+  
+  **Structure**:
+  ```
+  "alice@example.com" -> uuid1
+  "bob@example.com" -> uuid2
+  ```
+</ParamField>
+
+<Info>
+  UNIQUE INDEX implementation: `/home/daytona/workspace/source/helix-db/src/helix_engine/storage_core/mod.rs:147-158`
+</Info>
+
+**Query usage**:
+```hql
+// Fast lookup by unique field
+N<User>({email: "alice@example.com"})
+
+// Also efficient
+N<User>({username: "alice"})
+```
+
+**Characteristics**:
+- Only one node can have each value
+- Insert fails if duplicate value exists
+- Uses `PutFlags::NO_OVERWRITE` for enforcement
+
+<Warning>
+  Attempting to insert duplicate UNIQUE INDEX value will fail:
+  ```hql
+  AddN<User>({email: "alice@example.com"})  // First: OK
+  AddN<User>({email: "alice@example.com"})  // Second: ERROR
+  ```
+</Warning>
+
+<Info>
+  UNIQUE constraint enforcement: `/home/daytona/workspace/source/helix-db/src/helix_engine/traversal_core/ops/source/add_n.rs:82-102`
+</Info>
+
+### Index Maintenance
+
+Indices are automatically maintained:
+
+**On INSERT**:
+1. Serialize indexed field value
+2. Insert entry into index database
+3. For UNIQUE INDEX: Use `NO_OVERWRITE` flag
+4. For INDEX: Use `APPEND_DUP` flag
+
+**On UPDATE**:
+1. If indexed field changed:
+   - Remove old index entry
+   - Add new index entry
+2. If indexed field unchanged: No index update
+
+**On DELETE**:
+1. Remove all index entries for node
+
+## Graph Indices
+
+Graph indices enable efficient edge traversal in both directions.
+
+### Outgoing Edge Index
+
+<ParamField path="out_edges" type="Multi-value B+tree">
+  **Purpose**: Enable fast `OutE<Type>` traversals
+  
+  **Key**: `from_node_id (16 bytes) + label_hash (4 bytes)`
+  
+  **Value**: `edge_id (16 bytes) + to_node_id (16 bytes)`
+  
+  **Flags**: `DUP_SORT | DUP_FIXED`
+</ParamField>
+
+**Example structure**:
+```
+Key: [user_123_id + hash("FOLLOWS")]
+Values:
+  [edge_1_id + user_456_id]
+  [edge_2_id + user_789_id]
+  [edge_3_id + user_101_id]
+```
+
+**Query pattern**:
+```hql
+// Single index lookup returns all outgoing FOLLOWS edges
+N({id: user_123})
+::OutE<FOLLOWS>  // Index: out_edges[user_123_id + hash("FOLLOWS")]
+::ToN
+```
+
+<Info>
+  Outgoing edge index: `/home/daytona/workspace/source/helix-db/src/helix_engine/storage_core/mod.rs:114-124`
+</Info>
+
+### Incoming Edge Index
+
+<ParamField path="in_edges" type="Multi-value B+tree">
+  **Purpose**: Enable fast `InE<Type>` traversals
+  
+  **Key**: `to_node_id (16 bytes) + label_hash (4 bytes)`
+  
+  **Value**: `edge_id (16 bytes) + from_node_id (16 bytes)`
+  
+  **Flags**: `DUP_SORT | DUP_FIXED`
+</ParamField>
+
+**Example structure**:
+```
+Key: [user_123_id + hash("FOLLOWS")]
+Values:
+  [edge_4_id + user_222_id]
+  [edge_5_id + user_333_id]
+  [edge_6_id + user_444_id]
+```
+
+**Query pattern**:
+```hql
+// Single index lookup returns all incoming FOLLOWS edges
+N({id: user_123})
+::InE<FOLLOWS>   // Index: in_edges[user_123_id + hash("FOLLOWS")]
+::FromN
+```
+
+<Info>
+  Incoming edge index: `/home/daytona/workspace/source/helix-db/src/helix_engine/storage_core/mod.rs:126-136`
+</Info>
+
+### Label Hashing
+
+Edge labels are hashed to 32-bit values:
+
+```rust
+pub fn hash_label(label: &str, version: Option<u16>) -> u32 {
+    let mut hasher = DefaultHasher::new();
+    label.hash(&mut hasher);
+    if let Some(v) = version {
+        v.hash(&mut hasher);
+    }
+    hasher.finish() as u32
+}
+```
+
+**Benefits**:
+- Fixed 4-byte key component
+- Fast equality comparison
+- Compact storage
+
+**Trade-off**:
+- Theoretical hash collisions (extremely rare)
+- Version-specific hashing for schema evolution
+
+## Vector Indices (HNSW)
+
+HelixDB uses HNSW (Hierarchical Navigable Small World) for vector similarity search.
+
+### HNSW Structure
+
+<ParamField path="Layers" type="Hierarchical graph">
+  **Layer 0** (base): Contains all vectors
+  
+  **Layer 1+**: Sparse subsets for fast routing
+  
+  **Probability**: Each layer contains ~1/M of previous layer
+  
+  **Structure**:
+  ```
+  Layer 2: [v1] -------- [v50] -------- [v99]
+           |             |              |
+  Layer 1: [v1]--[v12]--[v50]--[v67]--[v99]
+           |     |      |      |       |
+  Layer 0: [v1]-[v2]-...-[v50]-...-[v99]-[v100]
+  ```
+</ParamField>
+
+**Navigation**:
+1. Start at entry point (top layer)
+2. Greedily navigate to nearest neighbor at current layer
+3. Drop to next layer when local minimum reached
+4. Repeat until base layer (Layer 0)
+5. Search base layer for k-nearest neighbors
+
+### HNSW Parameters
+
+<ParamField path="m" type="integer" default="16">
+  **Meaning**: Maximum number of bidirectional connections per node
+  
+  **Trade-offs**:
+  - Higher m: Better recall, more memory, slower insertion
+  - Lower m: Lower recall, less memory, faster insertion
+  
+  **Memory**: ~`m * 32 bytes * avg_layers` per vector
+</ParamField>
+
+<ParamField path="ef_construction" type="integer" default="200">
+  **Meaning**: Size of candidate list during index construction
+  
+  **Trade-offs**:
+  - Higher: Better index quality, slower insertion
+  - Lower: Faster insertion, lower quality
+  
+  **Effect**: Determines how thoroughly graph is searched during insertion
+</ParamField>
+
+<ParamField path="ef_search" type="integer" default="50">
+  **Meaning**: Size of candidate list during search
+  
+  **Trade-offs**:
+  - Higher: Better recall, slower queries
+  - Lower: Faster queries, lower recall
+  
+  **Runtime**: Can be adjusted per query for recall/speed balance
+</ParamField>
+
+<Info>
+  HNSW configuration: `/home/daytona/workspace/source/helix-db/src/helix_engine/storage_core/mod.rs:177-186`
+</Info>
+
+### HNSW Storage Layout
+
+Three databases per vector type:
+
+<ParamField path="vectors_{type}" type="Database">
+  **Purpose**: Store vector data and metadata
+  
+  **Key**: 128-bit vector UUID
+  
+  **Value**: Embedding (f64 array) + properties
+  
+  **Size**: `dimensions * 8 bytes` + property size
+</ParamField>
+
+<ParamField path="layers_{type}" type="Database">
+  **Purpose**: Store HNSW graph structure
+  
+  **Key**: `vector_id + layer_number`
+  
+  **Value**: Neighbor list:
+  ```rust
+  struct Neighbors {
+      ids: Vec<u128>,          // Neighbor vector IDs
+      distances: Vec<f32>,     // Distances to neighbors
+  }
+  ```
+</ParamField>
+
+<ParamField path="metadata_{type}" type="Database">
+  **Purpose**: Store HNSW metadata
+  
+  **Keys**:
+  - `entry_point`: Top-layer entry point vector ID
+  - Configuration parameters
+</ParamField>
+
+### Distance Metrics
+
+Supported distance functions:
+
+<ParamField path="Cosine Distance" type="metric">
+  **Formula**: `1 - (A · B) / (||A|| * ||B||)`
+  
+  **Range**: 0 (identical) to 2 (opposite)
+  
+  **Best for**: Text embeddings, normalized vectors
+  
+  **Normalization**: Handles different magnitude vectors
+</ParamField>
+
+<ParamField path="Euclidean Distance (L2)" type="metric">
+  **Formula**: `sqrt(Σ(ai - bi)^2)`
+  
+  **Range**: 0 (identical) to ∞
+  
+  **Best for**: Spatial data, non-normalized vectors
+  
+  **Properties**: True geometric distance
+</ParamField>
+
+<ParamField path="Dot Product" type="metric">
+  **Formula**: `Σ(ai * bi)`
+  
+  **Range**: -∞ to ∞
+  
+  **Best for**: Pre-normalized vectors, maximum speed
+  
+  **Note**: Requires normalized inputs for similarity
+</ParamField>
+
+<Info>
+  Distance metrics: `/home/daytona/workspace/source/helix-db/src/helix_engine/vector_core/vector_distance.rs`
+</Info>
+
+## BM25 Full-Text Index
+
+BM25 inverted index for full-text search.
+
+### Inverted Index Structure
+
+<ParamField path="bm25_inverted_index" type="Database">
+  **Purpose**: Map terms to documents
+  
+  **Key**: Term (string)
+  
+  **Value**: Posting list:
+  ```rust
+  struct PostingListEntry {
+      doc_id: u128,
+      term_frequency: u32,  // Occurrences in document
+  }
+  ```
+  
+  **Flags**: `DUP_SORT` (multiple documents per term)
+  
+  **Example**:
+  ```
+  "database" -> [(doc1, tf=5), (doc2, tf=3), (doc3, tf=1)]
+  "graph" -> [(doc1, tf=8), (doc4, tf=2)]
+  ```
+</ParamField>
+
+### Supporting Indices
+
+<ParamField path="bm25_doc_lengths" type="Database">
+  **Purpose**: Store document length for normalization
+  
+  **Key**: Document ID
+  
+  **Value**: Token count (u32)
+  
+  **Usage**: BM25 scoring formula normalizes by document length
+</ParamField>
+
+<ParamField path="bm25_term_frequencies" type="Database">
+  **Purpose**: Store document frequency per term
+  
+  **Key**: Term
+  
+  **Value**: Number of documents containing term (u32)
+  
+  **Usage**: IDF (Inverse Document Frequency) calculation
+</ParamField>
+
+<ParamField path="bm25_metadata" type="Database">
+  **Purpose**: Store global BM25 statistics
+  
+  **Contents**:
+  ```rust
+  struct BM25Metadata {
+      total_docs: u64,      // Total indexed documents
+      avgdl: f64,           // Average document length
+      k1: f32,              // Term frequency saturation
+      b: f32,               // Length normalization
+  }
+  ```
+</ParamField>
+
+<Info>
+  BM25 index structure: `/home/daytona/workspace/source/helix-db/src/helix_engine/bm25/bm25.rs:20-32`
+</Info>
+
+### Tokenization
+
+Text is tokenized before indexing:
+
+```rust
+fn tokenize(text: &str) -> Vec<String> {
+    text.split_whitespace()
+        .map(|s| s.to_lowercase())
+        .filter(|s| !is_stop_word(s))  // Optional
+        .map(|s| stem(s))              // Optional
+        .collect()
+}
+```
+
+**Steps**:
+1. Split on whitespace
+2. Convert to lowercase
+3. Remove stop words (optional)
+4. Apply stemming (optional)
+
+## Index Selection Strategies
+
+### When to Use INDEX
+
+<AccordionGroup>
+  <Accordion title="Frequently queried fields">
+    Fields used in WHERE clauses or lookups:
+    ```hql
+    N::Product {
+      INDEX category: String,  // Filtered frequently
+      INDEX brand: String,     // Filtered frequently
+    }
+    ```
+  </Accordion>
+  
+  <Accordion title="Low-to-medium cardinality">
+    Fields with moderate number of unique values:
+    ```hql
+    N::User {
+      INDEX status: String,     // active, inactive, banned
+      INDEX role: String,       // admin, user, moderator
+      INDEX country: String,    // 200 countries
+    }
+    ```
+  </Accordion>
+  
+  <Accordion title="Multiple rows per value">
+    When many records share same value:
+    ```hql
+    N::Order {
+      INDEX customer_id: ID,    // One customer, many orders
+      INDEX status: String,     // Many orders per status
+    }
+    ```
+  </Accordion>
+</AccordionGroup>
+
+### When to Use UNIQUE INDEX
+
+<AccordionGroup>
+  <Accordion title="Natural unique identifiers">
+    Fields that should be unique:
+    ```hql
+    N::User {
+      UNIQUE INDEX email: String,
+      UNIQUE INDEX username: String,
+      UNIQUE INDEX phone: String,
+    }
+    ```
+  </Accordion>
+  
+  <Accordion title="External IDs">
+    IDs from external systems:
+    ```hql
+    N::Product {
+      UNIQUE INDEX sku: String,
+      UNIQUE INDEX barcode: String,
+    }
+    ```
+  </Accordion>
+  
+  <Accordion title="Enforce constraints">
+    When uniqueness is a business rule:
+    ```hql
+    N::Session {
+      UNIQUE INDEX token: String,  // One session per token
+    }
+    ```
+  </Accordion>
+</AccordionGroup>
+
+### When NOT to Index
+
+<AccordionGroup>
+  <Accordion title="High cardinality fields">
+    Fields with mostly unique values:
+    ```hql
+    N::User {
+      // DON'T index: Almost all unique
+      bio: String,              // Free-form text
+      description: String,
+    }
+    ```
+    
+    Use full-text search (BM25) instead for text fields.
+  </Accordion>
+  
+  <Accordion title="Rarely queried fields">
+    Fields not used in lookups or filters:
+    ```hql
+    N::User {
+      // DON'T index: Display only
+      profile_picture_url: String,
+      bio: String,
+    }
+    ```
+  </Accordion>
+  
+  <Accordion title="Large values">
+    Fields with large data:
+    ```hql
+    N::Document {
+      // DON'T index: Too large
+      content: String,     // Use BM25 instead
+      raw_data: String,    // Use external storage
+    }
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## Index Performance
+
+### Space Overhead
+
+**INDEX**:
+- Key: Serialized value size
+- Value: 16 bytes (UUID)
+- Per entry: ~(value_size + 16 + 32) bytes
+
+**UNIQUE INDEX**:
+- Same as INDEX but no duplicates
+- Typically less total space
+
+**Graph indices** (always created):
+- out_edges: (20 + 32) bytes per edge
+- in_edges: (20 + 32) bytes per edge
+- Total: 104 bytes overhead per edge
+
+**HNSW**:
+- Vector data: dimensions * 8 bytes
+- Graph: m * 32 * avg_layers bytes
+- Total: ~(dimensions * 8 + m * 32 * 1.5) bytes per vector
+
+**BM25**:
+- Inverted index: ~50-200 bytes per term per doc
+- Metadata: ~16 bytes per doc
+- Highly dependent on vocabulary size
+
+### Query Performance
+
+**Primary index lookup** (by ID):
+- Complexity: O(log n)
+- Typical: < 1 ms
+
+**Secondary index lookup**:
+- Complexity: O(log n + k) where k = result count
+- Typical: 1-10 ms for small result sets
+
+**Graph traversal** (single hop):
+- Complexity: O(log n + k) where k = edge count
+- Typical: < 1 ms with < 100 edges
+
+**HNSW search**:
+- Complexity: O(log n) with high probability
+- Typical: 1-50 ms depending on ef_search and k
+
+**BM25 search**:
+- Complexity: O(t * log n) where t = terms
+- Typical: 5-100 ms depending on result size
+
+## Index Optimization Tips
+
+<AccordionGroup>
+  <Accordion title="Index selectivity matters">
+    Index fields that significantly reduce result set:
+    ```hql
+    // Good: High selectivity
+    UNIQUE INDEX email: String  // 1 result
+    
+    // Poor: Low selectivity
+    INDEX is_active: Boolean    // ~50% of records
+    ```
+  </Accordion>
+  
+  <Accordion title="Composite queries">
+    Use multiple indices sequentially:
+    ```hql
+    // First filter by role (indexed)
+    N<User>({role: "admin"})
+    // Then filter further
+    ::WHERE(_.created_at > "2024-01-01")
+    ```
+  </Accordion>
+  
+  <Accordion title="Covering queries">
+    Return only indexed fields when possible:
+    ```hql
+    // Only needs index lookup, not full node fetch
+    N<User>({email: email_param})::ID
+    ```
+  </Accordion>
+  
+  <Accordion title="Batch index updates">
+    Group related updates:
+    ```rust
+    let mut wtxn = env.write_txn()?;
+    for node in nodes {
+        storage.add_node(&mut wtxn, node)?;  // Indices updated in batch
+    }
+    wtxn.commit()?;
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## Related
+
+<CardGroup cols={2}>
+  <Card title="Performance" icon="gauge-high" href="/advanced/performance">
+    Index performance tuning
+  </Card>
+  <Card title="Storage Engine" icon="hard-drive" href="/advanced/storage-engine">
+    LMDB index implementation
+  </Card>
+  <Card title="Node Definitions" icon="circle-nodes" href="/api/node-definitions">
+    Define indices in schemas
+  </Card>
+  <Card title="Vector Definitions" icon="vector-square" href="/api/vector-definitions">
+    HNSW index configuration
+  </Card>
+</CardGroup>

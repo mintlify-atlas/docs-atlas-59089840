@@ -1,0 +1,450 @@
+---
+title: Using Built-in Embeddings
+description: Configure and use HelixDB's built-in embedding providers for automatic vector generation
+---
+
+## Overview
+
+HelixDB includes built-in support for multiple embedding providers, eliminating the need for external embedding services. The `embed!` macro automatically handles API calls, caching, and error handling.
+
+## Supported Providers
+
+HelixDB supports the following embedding providers:
+
+- **OpenAI** - text-embedding-3-small, text-embedding-3-large, text-embedding-ada-002
+- **Azure OpenAI** - Enterprise-grade OpenAI models
+- **Google Gemini** - gemini-embedding-001 with configurable task types
+- **Local models** - Self-hosted embedding servers
+
+## Configuration
+
+### OpenAI
+
+<Steps>
+
+### Set your API key
+
+```bash
+export OPENAI_API_KEY="sk-..."
+```
+
+### Use in your application
+
+```rust
+use helix_db::embed;
+
+// Use default model (text-embedding-ada-002)
+let embedding = embed!(db, "Your text here")?;
+
+// Specify a model
+let embedding = embed!(db, "Your text here", "openai:text-embedding-3-small")?;
+
+// Use latest large model
+let embedding = embed!(db, "Your text here", "openai:text-embedding-3-large")?;
+```
+
+</Steps>
+
+### Azure OpenAI
+
+For enterprise deployments with Azure:
+
+```bash
+export AZURE_OPENAI_API_KEY="your-azure-key"
+export AZURE_OPENAI_RESOURCE_NAME="your-resource-name"
+```
+
+```rust
+// Specify deployment ID after azure_openai:
+let embedding = embed!(
+    db,
+    "Your text here",
+    "azure_openai:text-embedding-3-small"
+)?;
+```
+
+The resource name and API key are read from environment variables, while the deployment ID is specified in the model string.
+
+### Google Gemini
+
+Gemini embeddings support different task types for optimized results:
+
+```bash
+export GEMINI_API_KEY="your-gemini-key"
+```
+
+```rust
+// Default task type (RETRIEVAL_DOCUMENT)
+let embedding = embed!(db, "Your text here", "gemini:gemini-embedding-001")?;
+
+// Semantic similarity task
+let embedding = embed!(
+    db,
+    "Your text here",
+    "gemini:gemini-embedding-001:SEMANTIC_SIMILARITY"
+)?;
+
+// Retrieval query task
+let query_embedding = embed!(
+    db,
+    "search query",
+    "gemini:gemini-embedding-001:RETRIEVAL_QUERY"
+)?;
+```
+
+**Available Gemini task types:**
+
+- `RETRIEVAL_DOCUMENT` - For documents to be retrieved (default)
+- `RETRIEVAL_QUERY` - For search queries
+- `SEMANTIC_SIMILARITY` - For computing text similarity
+- `CLASSIFICATION` - For text classification
+- `CLUSTERING` - For clustering similar texts
+
+### Local Models
+
+Run your own embedding server for complete control:
+
+```rust
+// Connect to local embedding server
+let embedding = embed!(
+    db,
+    "Your text here",
+    "local",
+    "http://localhost:8699/embed"
+)?;
+```
+
+The local server should accept POST requests with this format:
+
+```json
+{
+  "text": "Your text here",
+  "chunk_style": "recursive",
+  "chunk_size": 100
+}
+```
+
+And return:
+
+```json
+{
+  "embedding": [0.123, -0.456, 0.789, ...]
+}
+```
+
+## Embedding Workflow
+
+### Basic usage with the embed! macro
+
+```rust
+use helix_db::{embed, HelixDB};
+use std::sync::Arc;
+
+let db = Arc::new(HelixDB::new("./data", None).await?);
+
+// Generate embedding synchronously
+let text = "HelixDB is a multi-model database";
+let embedding = embed!(db, text)?;
+
+println!("Generated {} dimensional vector", embedding.len());
+// Output: Generated 1536 dimensional vector
+```
+
+### Async embedding generation
+
+For async contexts, use `embed_async!`:
+
+```rust
+use helix_db::embed_async;
+
+#[tokio::main]
+async fn main() -> Result<()> {
+    let db = Arc::new(HelixDB::new("./data", None).await?);
+    
+    let text = "HelixDB is a multi-model database";
+    let embedding = embed_async!(db, text).await?;
+    
+    Ok(())
+}
+```
+
+### Batch embedding
+
+Generate embeddings for multiple texts efficiently:
+
+```rust
+use futures::future::join_all;
+
+async fn batch_embed(
+    db: &HelixDB,
+    texts: Vec<String>,
+) -> Result<Vec<Vec<f64>>> {
+    let tasks: Vec<_> = texts
+        .iter()
+        .map(|text| {
+            let text = text.clone();
+            async move {
+                embed_async!(db, &text).await
+            }
+        })
+        .collect();
+    
+    let results = join_all(tasks).await;
+    results.into_iter().collect()
+}
+
+// Usage
+let texts = vec![
+    "First document".to_string(),
+    "Second document".to_string(),
+    "Third document".to_string(),
+];
+
+let embeddings = batch_embed(&db, texts).await?;
+```
+
+## Storing Vectors
+
+### Insert vectors with properties
+
+```rust
+use helix_db::helix_engine::traversal_core::ops::vectors::insert::InsertVAdapter;
+use helix_db::utils::properties::ImmutablePropertiesMap;
+
+let text = "Sample document content";
+let embedding = embed!(db, text)?;
+
+let txn = db.write_txn()?;
+let arena = bumpalo::Bump::new();
+
+// Create properties
+let mut props = std::collections::HashMap::new();
+props.insert("text", Value::String(text.to_string()));
+props.insert("source", Value::String("api".to_string()));
+props.insert("timestamp", Value::I64(chrono::Utc::now().timestamp()));
+
+let immutable_props = ImmutablePropertiesMap::from_hash_map(props, &arena)?;
+
+// Insert vector
+let vector = G::new(&db.storage, &txn, &arena)
+    .insert_v::<fn(&HVector, &RoTxn) -> bool>(
+        &embedding,
+        "content",  // label
+        Some(immutable_props),
+    )
+    .collect()?;
+
+txn.commit()?;
+```
+
+### Update existing vectors
+
+```rust
+// Update vector properties (vector data is immutable)
+let vector_id = /* existing vector id */;
+
+let txn = db.write_txn()?;
+let arena = bumpalo::Bump::new();
+
+let updated = G::new(&db.storage, &txn, &arena)
+    .v_from_id(vector_id)
+    .update(|val, arena| {
+        let mut props = val.properties.unwrap_or_default();
+        props.insert(
+            arena.alloc_str("updated_at"),
+            Value::I64(chrono::Utc::now().timestamp())
+        );
+        val.properties = Some(props);
+    })
+    .collect()?;
+
+txn.commit()?;
+```
+
+## Model Selection
+
+### Choosing the right model
+
+**Performance vs. Quality tradeoffs:**
+
+```rust
+// Fast and cost-effective (1536 dimensions)
+let embedding = embed!(db, text, "openai:text-embedding-3-small")?;
+
+// Highest quality (3072 dimensions)
+let embedding = embed!(db, text, "openai:text-embedding-3-large")?;
+
+// Legacy but stable (1536 dimensions)
+let embedding = embed!(db, text, "openai:text-embedding-ada-002")?;
+```
+
+**Model comparison:**
+
+| Model | Dimensions | Use Case |
+|-------|-----------|----------|
+| text-embedding-3-small | 1536 | General purpose, cost-effective |
+| text-embedding-3-large | 3072 | Highest accuracy, complex documents |
+| text-embedding-ada-002 | 1536 | Legacy, stable API |
+| gemini-embedding-001 | 768 | Multilingual, task-specific |
+
+### Configure default model
+
+Set a default embedding model for your database:
+
+```rust
+use helix_db::HelixDBConfig;
+
+let config = HelixDBConfig {
+    embedding_model: Some("openai:text-embedding-3-small".to_string()),
+    ..Default::default()
+};
+
+let db = HelixDB::with_config("./data", config).await?;
+
+// Now embed! uses the configured model by default
+let embedding = embed!(db, "text")?;
+```
+
+## Error Handling
+
+### Handle embedding errors
+
+```rust
+use helix_db::helix_engine::types::GraphError;
+
+fn safe_embed(db: &HelixDB, text: &str) -> Result<Vec<f64>> {
+    match embed!(db, text) {
+        Ok(embedding) => Ok(embedding),
+        Err(GraphError::EmbeddingError(msg)) => {
+            eprintln!("Embedding failed: {}", msg);
+            // Fallback strategy
+            if msg.contains("rate limit") {
+                std::thread::sleep(std::time::Duration::from_secs(1));
+                embed!(db, text)  // Retry
+            } else {
+                Err(GraphError::EmbeddingError(msg))
+            }
+        }
+        Err(e) => Err(e),
+    }
+}
+```
+
+### Retry with exponential backoff
+
+```rust
+use tokio::time::{sleep, Duration};
+
+async fn embed_with_retry(
+    db: &HelixDB,
+    text: &str,
+    max_retries: u32,
+) -> Result<Vec<f64>> {
+    let mut retries = 0;
+    let mut delay = Duration::from_millis(100);
+    
+    loop {
+        match embed_async!(db, text).await {
+            Ok(embedding) => return Ok(embedding),
+            Err(e) if retries < max_retries => {
+                eprintln!("Retry {}/{}: {}", retries + 1, max_retries, e);
+                sleep(delay).await;
+                delay *= 2;  // Exponential backoff
+                retries += 1;
+            }
+            Err(e) => return Err(e),
+        }
+    }
+}
+```
+
+## Performance Optimization
+
+### Caching embeddings
+
+```rust
+use lru::LruCache;
+use std::sync::Mutex;
+
+struct EmbeddingService {
+    db: Arc<HelixDB>,
+    cache: Mutex<LruCache<String, Vec<f64>>>,
+}
+
+impl EmbeddingService {
+    fn new(db: Arc<HelixDB>, cache_size: usize) -> Self {
+        Self {
+            db,
+            cache: Mutex::new(LruCache::new(cache_size)),
+        }
+    }
+    
+    async fn get_embedding(&self, text: &str) -> Result<Vec<f64>> {
+        // Check cache first
+        {
+            let mut cache = self.cache.lock().unwrap();
+            if let Some(embedding) = cache.get(text) {
+                return Ok(embedding.clone());
+            }
+        }
+        
+        // Generate and cache
+        let embedding = embed_async!(self.db, text).await?;
+        
+        {
+            let mut cache = self.cache.lock().unwrap();
+            cache.put(text.to_string(), embedding.clone());
+        }
+        
+        Ok(embedding)
+    }
+}
+```
+
+### Parallel processing
+
+```rust
+use rayon::prelude::*;
+
+fn embed_documents_parallel(
+    db: &HelixDB,
+    documents: Vec<String>,
+) -> Result<Vec<Vec<f64>>> {
+    documents
+        .par_iter()
+        .map(|doc| embed!(db, doc))
+        .collect()
+}
+```
+
+## Testing
+
+### Mock embeddings for tests
+
+```rust
+#[cfg(test)]
+mod tests {
+    use super::*;
+    
+    fn mock_embedding(text: &str) -> Vec<f64> {
+        // Return deterministic embedding for testing
+        let mut embedding = vec![0.0; 1536];
+        let hash = text.len() as f64;
+        embedding[0] = hash / 100.0;
+        embedding
+    }
+    
+    #[test]
+    fn test_vector_storage() {
+        let embedding = mock_embedding("test");
+        assert_eq!(embedding.len(), 1536);
+        // Test storage logic without API calls
+    }
+}
+```
+
+## Next Steps
+
+- Build [RAG Applications](/guides/rag-applications) using embeddings
+- Optimize [Vector Search](/guides/vector-search) performance
+- Integrate with [MCP Tools](/guides/mcp-integration) for AI agents

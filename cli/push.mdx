@@ -1,0 +1,382 @@
+---
+title: helix push
+description: Deploy and start a Helix instance
+---
+
+The `helix push` command builds your project (if needed) and deploys it to the specified instance. For local instances, it starts a Docker container. For cloud instances, it pushes to the configured cloud provider.
+
+## Usage
+
+```bash
+helix push [INSTANCE] [OPTIONS]
+```
+
+## Arguments
+
+<ParamField path="INSTANCE" type="string">
+  Instance name to push. If not provided, you'll be prompted to select from available instances.
+</ParamField>
+
+## Options
+
+<ParamField path="--dev" type="boolean" default="false">
+  Use development build profile for faster builds (Helix Cloud only). This is a one-time override and doesn't change helix.toml.
+</ParamField>
+
+## Local Deployment
+
+For local instances, `helix push` builds a Docker image and starts the container:
+
+```bash
+helix push dev
+```
+
+**Output:**
+```
+✓ Deploying dev
+  ✓ Syncing repository
+  ✓ Compiling queries (5 queries)
+  ✓ Building Docker image
+  ✓ Starting instance
+
+Local URL:    http://localhost:6969
+Container:    helix-myproject-dev
+Data volume:  /home/user/.helix/dev/volumes/data
+```
+
+<Steps>
+  <Step title="Builds the project">
+    Compiles your queries and generates a Docker image (see [helix build](/cli/build) for details).
+  </Step>
+
+  <Step title="Checks port availability">
+    Ensures the configured port is available. If not, automatically selects an available port.
+    
+    **Port conflict handling:**
+    ```
+    ⚠ Port 6969 is in use. Using port 6970 instead.
+    ```
+  </Step>
+
+  <Step title="Starts the container">
+    Launches the Docker container with the configured settings.
+  </Step>
+</Steps>
+
+### Port Configuration
+
+Configure the port in `helix.toml`:
+
+```toml
+[local.dev]
+port = 6969
+```
+
+If the port is unavailable, the CLI automatically assigns a free port and updates the docker-compose configuration.
+
+### Volume Management
+
+Data is persisted in a Docker volume at `.helix/<instance>/volumes/data`. This ensures your data survives container restarts.
+
+**View data location:**
+```bash
+helix status
+```
+
+## Cloud Deployment
+
+### Helix Cloud
+
+Deploy to Helix Cloud:
+
+```bash
+helix push production
+```
+
+**Output:**
+```
+✓ Deploying production
+  ✓ Compiling queries (5 queries)
+  ✓ Deploying to cloud (cluster: cluster_abc123)
+
+✓ Deployment complete
+```
+
+Helix Cloud deployments:
+- Don't build Docker images locally (compiled on Helix infrastructure)
+- Support fast dev mode with `--dev` flag
+- Automatically scale based on load
+- Include built-in monitoring and logging
+
+### Development Profile
+
+For faster iteration during development:
+
+```bash
+helix push production --dev
+```
+
+This uses a development build profile for faster compilation, but doesn't change your `helix.toml` configuration. The next push without `--dev` will use the configured build mode.
+
+**Output:**
+```
+⚠ Using one-time dev build override for this deploy; helix.toml build_mode is unchanged.
+
+✓ Deploying production
+  ✓ Compiling queries (5 queries)
+  ✓ Deploying to cloud (cluster: cluster_abc123)
+```
+
+### Authentication
+
+Cloud deployments require authentication:
+
+```bash
+# Login first
+helix auth login
+
+# Then push
+helix push production
+```
+
+If not authenticated, you'll be prompted to login:
+
+```
+⚠ Not authenticated with Helix Cloud
+
+◆  Would you like to login now?
+│  ● Yes
+│  ○ No
+```
+
+## Other Cloud Providers
+
+### AWS ECR
+
+Deploy to AWS ECR:
+
+```bash
+helix push prod-ecr
+```
+
+This:
+1. Builds the Docker image locally
+2. Authenticates with AWS ECR
+3. Pushes the image to your ECR repository
+
+**Configuration:**
+```toml
+[cloud.prod-ecr]
+type = "ecr"
+repository_name = "my-helix-repo"
+region = "us-east-1"
+auth_type = "aws-cli"
+build_mode = "release"
+```
+
+### Fly.io
+
+Deploy to Fly.io:
+
+```bash
+helix push prod-fly
+```
+
+This:
+1. Builds the Docker image locally
+2. Authenticates with Fly.io
+3. Deploys the image to your Fly.io app
+
+**Configuration:**
+```toml
+[cloud.prod-fly]
+type = "flyio"
+app_name = "my-helix-app"
+region = "iad"
+auth_type = "cli"
+volume_size = 20
+vm_size = "shared-cpu-4x"
+build_mode = "release"
+```
+
+## Interactive Selection
+
+Without specifying an instance, you'll be prompted:
+
+```bash
+helix push
+```
+
+**Interactive prompt:**
+```
+┌  helix push
+│
+│  This will build and redeploy your selected instance based on
+│  the configuration in helix.toml.
+│
+◆  Select an instance:
+│  ● dev (Local)
+│  ○ staging (Helix Cloud)
+│  ○ production (Helix Cloud)
+│  ○ prod-ecr (AWS ECR)
+```
+
+## Redeployment
+
+Running `helix push` on an existing instance redeploys it:
+
+```bash
+# Initial deployment
+helix push dev
+
+# Make changes to queries
+vim db/queries.hx
+
+# Redeploy with updated queries
+helix push dev
+```
+
+For local instances, this:
+1. Rebuilds the Docker image
+2. Stops the existing container
+3. Starts a new container
+4. Preserves data in the volume
+
+## Error Handling
+
+### Build Failures
+
+If compilation fails, the deployment is aborted:
+
+```
+✗ Deploying dev
+  ✓ Syncing repository
+  ✗ Compiling queries
+
+Compilation failed:
+Error in queries.hx:15:5
+  Type 'Follow' is not defined in schema
+```
+
+Fix the errors and run `helix push` again.
+
+### Port Conflicts
+
+Port conflicts are handled automatically:
+
+```
+⚠ Port 6969 is in use. Using port 6970 instead.
+
+✓ Deploying dev
+Local URL: http://localhost:6970
+```
+
+### Docker Not Running
+
+```
+Error: Docker is not running or not accessible
+
+Hint: Start Docker Desktop or the Docker daemon
+```
+
+Start Docker and try again.
+
+### Missing Cluster ID
+
+For cloud instances without a configured cluster:
+
+```
+Error: Cluster for instance 'production' has not been created yet.
+
+Run 'helix push' to set up a cluster.
+```
+
+This typically happens if you:
+1. Manually edited `helix.toml`
+2. Haven't completed the cloud setup
+
+**Solution:** Run `helix add cloud --name production` to create the cluster.
+
+## Metrics
+
+The CLI tracks deployment metrics:
+- Build time
+- Number of queries
+- Success/failure status
+- Deployment type (local vs cloud)
+
+These metrics help improve the Helix CLI. Manage metrics with:
+
+```bash
+helix metrics status
+helix metrics off
+```
+
+## Examples
+
+### Basic Local Deployment
+
+```bash
+# First time
+helix init
+helix push dev
+
+# After changes
+vim db/queries.hx
+helix push dev
+```
+
+### Multi-Instance Workflow
+
+```bash
+# Deploy to local dev
+helix push dev
+
+# Test locally
+curl http://localhost:6969/health
+
+# Deploy to staging
+helix push staging
+
+# Deploy to production
+helix push production
+```
+
+### CI/CD Pipeline
+
+```yaml
+name: Deploy to Production
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      
+      - name: Install Helix CLI
+        run: curl -sSL https://install.helix-db.com | sh
+      
+      - name: Login to Helix Cloud
+        env:
+          HELIX_API_KEY: ${{ secrets.HELIX_API_KEY }}
+        run: |
+          mkdir -p ~/.helix
+          echo "helix_user_id=${{ secrets.HELIX_USER_ID }}" > ~/.helix/credentials
+          echo "helix_user_key=$HELIX_API_KEY" >> ~/.helix/credentials
+      
+      - name: Deploy to production
+        run: helix push production
+```
+
+## Next Steps
+
+After deployment:
+
+- **Check status:** `helix status`
+- **View logs:** `helix logs dev`
+- **Test queries:** Use the Helix Dashboard or HTTP API
+- **Sync from cloud:** `helix sync production`

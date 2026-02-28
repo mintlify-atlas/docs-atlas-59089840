@@ -1,0 +1,826 @@
+---
+title: 'Operations'
+description: 'AddN, AddE, AddV, and data manipulation operations in HelixQL'
+icon: 'play'
+---
+
+## Overview
+
+Operations are the building blocks for creating and manipulating data in HelixDB. They include creation operations (AddN, AddE, AddV), update operations (UPDATE, UpsertN, UpsertE, UpsertV), and deletion (DROP).
+
+## Creation Operations
+
+### AddN - Add Node
+
+Creates a new node in the graph.
+
+```hql
+AddN<NodeType>({
+  field: value,
+  ...
+})
+```
+
+<ParamField path="NodeType" type="string" required>
+  The node type as defined in schema
+</ParamField>
+
+<ParamField path="fields" type="object">
+  Optional field values. Fields with DEFAULT values will use defaults if not provided.
+</ParamField>
+
+#### Examples
+
+```hql
+// Simple node creation
+QUERY create_user(name: String, email: String) =>
+  AddN<User>({
+    name: name,
+    email: email
+  })
+RETURN _.id
+
+// With default values
+QUERY create_post(title: String, content: String) =>
+  AddN<Post>({
+    title: title,
+    content: content
+    // created_at will use DEFAULT NOW
+    // published will use DEFAULT false
+  })
+RETURN _
+
+// Without properties
+QUERY create_category(name: String) =>
+  AddN<Category>({
+    name: name
+  })
+RETURN _.id
+```
+
+#### Implementation Details
+
+Nodes are created with:
+- Auto-generated UUID v6 (time-ordered)
+- Schema version from latest schema
+- Properties validated against schema
+- Secondary indices automatically updated
+
+<Info>
+  AddN implementation: `/home/daytona/workspace/source/helix-db/src/helix_engine/traversal_core/ops/source/add_n.rs:50-135`
+</Info>
+
+#### Secondary Index Handling
+
+```rust
+// UNIQUE INDEX: Uses NO_OVERWRITE flag
+db.put_with_flags(
+    txn,
+    PutFlags::NO_OVERWRITE,
+    &serialized_key,
+    &node.id,
+)
+
+// INDEX: Uses APPEND_DUP flag for duplicates
+db.put_with_flags(
+    txn,
+    PutFlags::APPEND_DUP,
+    &serialized_key,
+    &node.id,
+)
+```
+
+<Info>
+  Index insertion: `/home/daytona/workspace/source/helix-db/src/helix_engine/traversal_core/ops/source/add_n.rs:82-102`
+</Info>
+
+### AddE - Add Edge
+
+Creates a new edge connecting two nodes.
+
+```hql
+AddE<EdgeType>({
+  field: value,
+  ...
+})
+::From(source_id)
+::To(target_id)
+```
+
+<ParamField path="EdgeType" type="string" required>
+  The edge type as defined in schema
+</ParamField>
+
+<ParamField path="fields" type="object">
+  Optional edge property values
+</ParamField>
+
+<ParamField path="From" type="ID" required>
+  Source node ID traversal
+</ParamField>
+
+<ParamField path="To" type="ID" required>
+  Target node ID traversal
+</ParamField>
+
+#### Examples
+
+```hql
+// Simple edge
+QUERY create_follow(user_id: ID, target_id: ID) =>
+  AddE<FOLLOWS>
+  ::From(N({id: user_id})::ID)
+  ::To(N({id: target_id})::ID)
+RETURN _.id
+
+// Edge with properties
+QUERY create_rating(
+  user_id: ID,
+  movie_id: ID,
+  score: I32,
+  review: String
+) =>
+  AddE<RATED>({
+    score: score,
+    review: review,
+    rated_at: NOW
+  })
+  ::From(N({id: user_id})::ID)
+  ::To(N({id: movie_id})::ID)
+RETURN _
+
+// From query results
+QUERY connect_post_to_category(
+  post_id: ID,
+  category_name: String
+) =>
+  post <- N({id: post_id})
+  category <- N<Category>::WHERE(_.name == category_name)::FIRST
+  
+  AddE<BELONGS_TO>
+  ::From(post::ID)
+  ::To(category::ID)
+RETURN true
+```
+
+#### UNIQUE Edge Behavior
+
+For edges defined with `UNIQUE` modifier:
+
+```hql
+E::LIKES UNIQUE {
+  From: User,
+  To: Post
+}
+```
+
+Attempting to create duplicate edge will fail:
+
+```hql
+QUERY like_post(user_id: ID, post_id: ID) =>
+  AddE<LIKES>  // Will fail if already exists
+  ::From(N({id: user_id})::ID)
+  ::To(N({id: post_id})::ID)
+RETURN _.id
+```
+
+<Warning>
+  UNIQUE edges use `PutFlags::NO_OVERWRITE` which raises an error if edge already exists.
+</Warning>
+
+<Info>
+  AddE UNIQUE handling: `/home/daytona/workspace/source/helix-db/src/helix_engine/traversal_core/ops/source/add_e.rs:98-110`
+</Info>
+
+#### Edge Storage
+
+Edges are stored in three locations:
+1. Main edge database with full data
+2. Outgoing edge index (from_node + label -> edge)
+3. Incoming edge index (to_node + label -> edge)
+
+This tri-index structure enables O(1) traversal in both directions.
+
+### AddV - Add Vector
+
+Creates a new vector embedding.
+
+```hql
+AddV<VectorType>(
+  embedding_data,
+  {
+    field: value,
+    ...
+  }
+)
+```
+
+<ParamField path="VectorType" type="string" required>
+  The vector type as defined in schema
+</ParamField>
+
+<ParamField path="embedding_data" required>
+  Vector embedding data as:
+  - `Embed(text)` - Generate from text
+  - `[f64, ...]` - Literal array
+  - Variable containing embedding
+</ParamField>
+
+<ParamField path="fields" type="object">
+  Optional metadata fields
+</ParamField>
+
+#### Examples
+
+```hql
+// From text using Embed()
+QUERY add_document(
+  doc_id: ID,
+  content: String,
+  title: String
+) =>
+  AddV<DocEmbedding>(
+    Embed(content),
+    {
+      document_id: doc_id,
+      title: title,
+      created_at: NOW
+    }
+  )
+RETURN _.id
+
+// From literal vector
+QUERY add_embedding(
+  vector: [F64],
+  metadata: String
+) =>
+  AddV<CustomEmbedding>(
+    vector,
+    {
+      metadata: metadata
+    }
+  )
+RETURN _.id
+
+// Connect vector to node
+QUERY add_product_embedding(
+  product_id: ID,
+  description: String
+) =>
+  vec <- AddV<ProductEmbedding>(
+    Embed(description),
+    {
+      product_id: product_id
+    }
+  )
+  
+  AddE<HAS_EMBEDDING>
+  ::From(N({id: product_id})::ID)
+  ::To(vec::ID)
+RETURN vec.id
+```
+
+<Info>
+  AddV implementation: `/home/daytona/workspace/source/helix-db/src/helix_engine/traversal_core/ops/vectors/insert.rs:32-63`
+</Info>
+
+#### HNSW Index Integration
+
+Vectors are automatically indexed in HNSW during insertion:
+
+```rust
+pub fn insert<F>(
+    txn: &mut RwTxn,
+    label: &str,
+    query: &[f64],
+    properties: Option<ImmutablePropertiesMap>,
+    arena: &Bump,
+) -> Result<HVector, VectorError>
+```
+
+The HNSW index is updated with:
+- M bidirectional links per layer
+- ef_construction candidate list size
+- Distance metric (cosine, euclidean, etc.)
+
+### BatchAddV - Batch Add Vectors
+
+Efficiently insert multiple vectors in a single operation.
+
+```hql
+BatchAddV<VectorType>(vector_data)
+```
+
+<ParamField path="VectorType" type="string" required>
+  The vector type as defined in schema
+</ParamField>
+
+<ParamField path="vector_data" type="array" required>
+  Array of vector objects with embedding and metadata
+</ParamField>
+
+#### Example
+
+```hql
+QUERY bulk_import_documents(
+  documents: [{
+    id: ID,
+    content: String,
+    title: String
+  }]
+) =>
+  vectors <- [
+    {
+      embedding: Embed(doc.content),
+      document_id: doc.id,
+      title: doc.title
+    }
+    FOR doc IN documents
+  ]
+  
+  BatchAddV<DocEmbedding>(vectors)
+RETURN true
+```
+
+<Note>
+  `BatchAddV` is significantly faster than multiple `AddV` calls due to optimized HNSW batch insertion.
+</Note>
+
+## Update Operations
+
+### UPDATE
+
+Updates fields on existing entities.
+
+```hql
+traversal::UPDATE({
+  field: new_value,
+  ...
+})
+```
+
+<ParamField path="fields" type="object" required>
+  Fields to update with new values
+</ParamField>
+
+#### Examples
+
+```hql
+// Update single node
+QUERY update_user_email(user_id: ID, new_email: String) =>
+  N({id: user_id})
+  ::UPDATE({
+    email: new_email,
+    updated_at: NOW
+  })
+RETURN true
+
+// Update multiple nodes
+QUERY publish_posts(author_id: ID) =>
+  N({id: author_id})
+  ::OutE<AUTHORED>
+  ::ToN
+  ::WHERE(_.status == "draft")
+  ::UPDATE({
+    status: "published",
+    published_at: NOW
+  })
+RETURN true
+
+// Update with computed values
+QUERY increment_view_count(post_id: ID) =>
+  N({id: post_id})
+  ::UPDATE({
+    view_count: ADD(_.view_count, 1),
+    last_viewed: NOW
+  })
+RETURN true
+```
+
+<Info>
+  UPDATE implementation: `/home/daytona/workspace/source/helix-db/src/helix_engine/traversal_core/ops/util/update.rs`
+</Info>
+
+### UpsertN - Upsert Node
+
+Updates a node if it exists based on traversal, or creates if it doesn't.
+
+```hql
+traversal::UpsertN({
+  field: value,
+  ...
+})
+```
+
+#### Example
+
+```hql
+QUERY upsert_user(email: String, name: String) =>
+  N<User>({email: email})  // Lookup by indexed field
+  ::UpsertN({
+    name: name,
+    updated_at: NOW
+  })
+RETURN _
+```
+
+### UpsertE - Upsert Edge
+
+Updates an edge or creates if it doesn't exist.
+
+```hql
+traversal::UpsertE({
+  field: value,
+  ...
+})
+::From(source_id)
+::To(target_id)
+```
+
+#### Example
+
+```hql
+QUERY upsert_rating(
+  user_id: ID,
+  movie_id: ID,
+  score: I32
+) =>
+  N({id: user_id})
+  ::OutE<RATED>
+  ::WHERE(_::ToN.id == movie_id)
+  ::UpsertE({
+    score: score,
+    updated_at: NOW
+  })
+  ::From(N({id: user_id})::ID)
+  ::To(N({id: movie_id})::ID)
+RETURN true
+```
+
+### UpsertV - Upsert Vector
+
+Updates a vector's embedding and metadata or creates if it doesn't exist.
+
+```hql
+traversal::UpsertV(
+  embedding_data,
+  {
+    field: value,
+    ...
+  }
+)
+```
+
+#### Example
+
+```hql
+QUERY upsert_document_embedding(
+  doc_id: ID,
+  content: String
+) =>
+  V<DocEmbedding>({document_id: doc_id})
+  ::UpsertV(
+    Embed(content),
+    {
+      updated_at: NOW
+    }
+  )
+RETURN _.id
+```
+
+<Info>
+  Upsert implementations: `/home/daytona/workspace/source/helix-db/src/helix_engine/traversal_core/ops/util/upsert.rs`
+</Info>
+
+## Deletion Operations
+
+### DROP
+
+Deletes entities from the graph.
+
+```hql
+DROP traversal
+```
+
+<ParamField path="traversal" required>
+  Traversal resolving to entities to delete
+</ParamField>
+
+#### Examples
+
+```hql
+// Delete single node
+QUERY delete_user(user_id: ID) =>
+  DROP N({id: user_id})
+RETURN true
+
+// Delete multiple nodes
+QUERY delete_inactive_users() =>
+  DROP N<User>::WHERE(
+    AND(
+      _.last_login < SUB(NOW, 86400 * 365),  // 1 year
+      _.active == false
+    )
+  )
+RETURN true
+
+// Delete edges
+QUERY unfollow(user_id: ID, target_id: ID) =>
+  DROP N({id: user_id})
+    ::OutE<FOLLOWS>
+    ::WHERE(_::ToN.id == target_id)
+RETURN true
+
+// Delete with cascading
+QUERY delete_post_with_comments(post_id: ID) =>
+  post <- N({id: post_id})
+  
+  // Delete comments
+  DROP post::InE<COMMENTED_ON>
+  
+  // Delete post
+  DROP post
+RETURN true
+```
+
+<Warning>
+  DROP does not automatically cascade. You must explicitly delete related entities if needed.
+</Warning>
+
+<Info>
+  DROP implementation: `/home/daytona/workspace/source/helix-db/src/helix_engine/traversal_core/ops/util/drop.rs`
+</Info>
+
+## Utility Operations
+
+### ID
+
+Extracts the ID from an entity.
+
+```hql
+traversal::ID
+```
+
+#### Example
+
+```hql
+QUERY get_user_id(email: String) =>
+  N<User>({email: email})::ID
+RETURN _
+```
+
+### FIRST
+
+Returns only the first result from a traversal.
+
+```hql
+traversal::FIRST
+```
+
+#### Example
+
+```hql
+QUERY get_latest_post(author_id: ID) =>
+  N({id: author_id})
+  ::OutE<AUTHORED>
+  ::ToN
+  ::ORDER<Desc>(_.created_at)
+  ::FIRST
+RETURN _
+```
+
+### COUNT
+
+Counts the number of results.
+
+```hql
+traversal::COUNT
+```
+
+#### Example
+
+```hql
+QUERY count_followers(user_id: ID) =>
+  N({id: user_id})
+  ::InE<FOLLOWS>
+  ::COUNT
+RETURN _
+```
+
+<Info>
+  COUNT implementation: `/home/daytona/workspace/source/helix-db/src/helix_engine/traversal_core/ops/util/count.rs`
+</Info>
+
+## Search Operations
+
+### SearchV - Vector Search
+
+Performs k-nearest neighbor vector similarity search.
+
+```hql
+SearchV<VectorType>(
+  query_vector,
+  limit
+)
+```
+
+<ParamField path="VectorType" type="string" required>
+  Vector type to search
+</ParamField>
+
+<ParamField path="query_vector" required>
+  Query vector as `Embed(text)`, literal array, or variable
+</ParamField>
+
+<ParamField path="limit" type="integer" required>
+  Number of nearest neighbors to return (k)
+</ParamField>
+
+#### Examples
+
+```hql
+// Basic semantic search
+QUERY search_documents(query: String, limit: I32) =>
+  SearchV<DocEmbedding>(Embed(query), limit)
+RETURN [
+  {
+    id: _.id,
+    title: _.title,
+    score: _.score
+  }
+]
+
+// With filtering
+QUERY search_products(
+  query: String,
+  category: String,
+  limit: I32
+) =>
+  SearchV<ProductEmbedding>(Embed(query), limit * 2)
+  ::WHERE(_.category == category)
+  ::RANGE(0, limit)
+RETURN _
+```
+
+<Info>
+  SearchV implementation: `/home/daytona/workspace/source/helix-db/src/helix_engine/traversal_core/ops/vectors/search.rs`
+</Info>
+
+### SearchBM25 - Full-Text Search
+
+Performs BM25 full-text search.
+
+```hql
+SearchBM25<NodeType>(
+  query_string,
+  limit
+)
+```
+
+<ParamField path="NodeType" type="string" required>
+  Node type to search (must have BM25 index)
+</ParamField>
+
+<ParamField path="query_string" type="string" required>
+  Search query text
+</ParamField>
+
+<ParamField path="limit" type="integer" required>
+  Maximum number of results
+</ParamField>
+
+#### Example
+
+```hql
+QUERY text_search(query: String, limit: I32) =>
+  SearchBM25<Document>(query, limit)
+RETURN [
+  {
+    id: _.id,
+    title: _.title,
+    score: _.score
+  }
+]
+```
+
+<Info>
+  SearchBM25 implementation: `/home/daytona/workspace/source/helix-db/src/helix_engine/traversal_core/ops/bm25/search_bm25.rs`
+</Info>
+
+## Reranking Operations
+
+### RerankRRF - Reciprocal Rank Fusion
+
+Combines and reranks multiple result sets using RRF.
+
+```hql
+results::RerankRRF(k: value)
+```
+
+<ParamField path="k" type="integer" default="60">
+  RRF constant parameter. Higher values give more weight to lower-ranked items.
+</ParamField>
+
+#### Example
+
+```hql
+QUERY hybrid_search(query: String, limit: I32) =>
+  vec_results <- SearchV<DocEmbedding>(Embed(query), limit)
+  bm25_results <- SearchBM25<Document>(query, limit)
+  
+  combined <- [vec_results, bm25_results]
+RETURN combined::RerankRRF(k: 60)
+```
+
+<Info>
+  Formula: `score = sum(1 / (k + rank)) for each result set`
+  
+  Implementation: `/home/daytona/workspace/source/helix-db/src/helix_engine/reranker/fusion/rrf.rs`
+</Info>
+
+### RerankMMR - Maximal Marginal Relevance
+
+Reranks results to maximize diversity while maintaining relevance.
+
+```hql
+results::RerankMMR(
+  lambda: value,
+  distance: "metric"
+)
+```
+
+<ParamField path="lambda" type="float" required>
+  Trade-off between relevance and diversity (0.0 to 1.0)
+  - 1.0 = pure relevance
+  - 0.0 = pure diversity
+  - 0.5 = balanced
+</ParamField>
+
+<ParamField path="distance" type="string">
+  Distance metric: "cosine", "euclidean", or "dot"
+</ParamField>
+
+#### Example
+
+```hql
+QUERY diverse_search(query: String, limit: I32) =>
+  SearchV<DocEmbedding>(Embed(query), limit * 3)
+  ::RerankMMR(lambda: 0.7, distance: "cosine")
+  ::RANGE(0, limit)
+RETURN _
+```
+
+<Info>
+  Implementation: `/home/daytona/workspace/source/helix-db/src/helix_engine/reranker/fusion/mmr.rs`
+</Info>
+
+## Best Practices
+
+<AccordionGroup>
+  <Accordion title="Batch operations for bulk inserts">
+    Use `BatchAddV` and FOR loops with `AddN` for efficient bulk operations.
+    
+    ```hql
+    FOR item IN items {
+      AddN<Item>({name: item.name})
+    }
+    ```
+  </Accordion>
+  
+  <Accordion title="Use UpsertN for idempotent operations">
+    Upsert operations prevent duplicate creation and enable safe retries.
+    
+    ```hql
+    N<User>({email: email})::UpsertN({name: name})
+    ```
+  </Accordion>
+  
+  <Accordion title="Explicit cascade deletes">
+    Always explicitly delete related entities when using DROP to maintain referential integrity.
+  </Accordion>
+  
+  <Accordion title="Validate before update">
+    Use WHERE to filter entities before UPDATE to avoid unintended modifications.
+  </Accordion>
+  
+  <Accordion title="Use FIRST for single results">
+    Add `::FIRST` when you expect a single result to optimize query execution.
+  </Accordion>
+</AccordionGroup>
+
+## Related
+
+<CardGroup cols={2}>
+  <Card title="Query Syntax" icon="code" href="/api/query-syntax">
+    Complete query language reference
+  </Card>
+  <Card title="Functions" icon="function" href="/api/functions">
+    Built-in mathematical and utility functions
+  </Card>
+  <Card title="Node Definitions" icon="circle-nodes" href="/api/node-definitions">
+    Node schema for AddN operations
+  </Card>
+  <Card title="Vector Definitions" icon="vector-square" href="/api/vector-definitions">
+    Vector schema for AddV operations
+  </Card>
+</CardGroup>

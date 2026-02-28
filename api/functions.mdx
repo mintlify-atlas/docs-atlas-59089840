@@ -1,0 +1,818 @@
+---
+title: 'Built-in Functions'
+description: 'Mathematical, aggregation, and utility functions in HelixQL'
+icon: 'function'
+---
+
+## Overview
+
+HelixQL provides a comprehensive set of built-in functions for mathematical operations, aggregations, and data transformations.
+
+## Mathematical Functions
+
+### Arithmetic Operations
+
+<ParamField path="ADD(a, b)" type="function">
+  Addition of two numbers
+  
+  ```hql
+  ADD(price, tax)  // price + tax
+  ```
+</ParamField>
+
+<ParamField path="SUB(a, b)" type="function">
+  Subtraction
+  
+  ```hql
+  SUB(total, discount)  // total - discount
+  ```
+</ParamField>
+
+<ParamField path="MUL(a, b)" type="function">
+  Multiplication
+  
+  ```hql
+  MUL(quantity, price)  // quantity * price
+  ```
+</ParamField>
+
+<ParamField path="DIV(a, b)" type="function">
+  Division
+  
+  ```hql
+  DIV(total, count)  // total / count
+  ```
+</ParamField>
+
+<ParamField path="POW(base, exponent)" type="function">
+  Exponentiation
+  
+  ```hql
+  POW(radius, 2)  // radius^2
+  ```
+</ParamField>
+
+<ParamField path="MOD(a, b)" type="function">
+  Modulo operation
+  
+  ```hql
+  MOD(value, 10)  // value % 10
+  ```
+</ParamField>
+
+#### Examples
+
+```hql
+// Calculate total price with tax
+QUERY calculate_total(price: F64, tax_rate: F64) =>
+  tax <- MUL(price, tax_rate)
+  total <- ADD(price, tax)
+RETURN total
+
+// Calculate discount
+QUERY apply_discount(price: F64, discount_pct: F64) =>
+  discount <- MUL(price, DIV(discount_pct, 100))
+  final_price <- SUB(price, discount)
+RETURN final_price
+
+// Update with arithmetic
+QUERY increment_counter(item_id: ID, amount: I32) =>
+  N({id: item_id})
+  ::UPDATE({
+    count: ADD(_.count, amount)
+  })
+RETURN true
+```
+
+### Unary Math Functions
+
+<ParamField path="ABS(x)" type="function">
+  Absolute value
+  
+  ```hql
+  ABS(-5)  // 5
+  ```
+</ParamField>
+
+<ParamField path="SQRT(x)" type="function">
+  Square root
+  
+  ```hql
+  SQRT(16)  // 4.0
+  ```
+</ParamField>
+
+<ParamField path="LN(x)" type="function">
+  Natural logarithm (base e)
+  
+  ```hql
+  LN(2.718281828)  // ~1.0
+  ```
+</ParamField>
+
+<ParamField path="LOG10(x)" type="function">
+  Base-10 logarithm
+  
+  ```hql
+  LOG10(100)  // 2.0
+  ```
+</ParamField>
+
+<ParamField path="LOG(x, base)" type="function">
+  Logarithm with custom base
+  
+  ```hql
+  LOG(8, 2)  // 3.0
+  ```
+</ParamField>
+
+<ParamField path="EXP(x)" type="function">
+  Exponential function (e^x)
+  
+  ```hql
+  EXP(1)  // ~2.718
+  ```
+</ParamField>
+
+<ParamField path="CEIL(x)" type="function">
+  Round up to nearest integer
+  
+  ```hql
+  CEIL(4.3)  // 5.0
+  ```
+</ParamField>
+
+<ParamField path="FLOOR(x)" type="function">
+  Round down to nearest integer
+  
+  ```hql
+  FLOOR(4.7)  // 4.0
+  ```
+</ParamField>
+
+<ParamField path="ROUND(x)" type="function">
+  Round to nearest integer
+  
+  ```hql
+  ROUND(4.5)  // 5.0
+  ROUND(4.4)  // 4.0
+  ```
+</ParamField>
+
+#### Examples
+
+```hql
+// Calculate distance
+QUERY euclidean_distance(
+  x1: F64, y1: F64,
+  x2: F64, y2: F64
+) =>
+  dx <- SUB(x2, x1)
+  dy <- SUB(y2, y1)
+  squared_sum <- ADD(POW(dx, 2), POW(dy, 2))
+  distance <- SQRT(squared_sum)
+RETURN distance
+
+// Normalize value
+QUERY normalize_score(score: F64) =>
+  ROUND(MUL(DIV(score, 100), 10))
+RETURN _
+```
+
+### Trigonometric Functions
+
+<ParamField path="SIN(x)" type="function">
+  Sine (x in radians)
+  
+  ```hql
+  SIN(PI)  // ~0.0
+  ```
+</ParamField>
+
+<ParamField path="COS(x)" type="function">
+  Cosine (x in radians)
+  
+  ```hql
+  COS(0)  // 1.0
+  ```
+</ParamField>
+
+<ParamField path="TAN(x)" type="function">
+  Tangent (x in radians)
+  
+  ```hql
+  TAN(PI / 4)  // ~1.0
+  ```
+</ParamField>
+
+<ParamField path="ASIN(x)" type="function">
+  Arcsine (returns radians)
+  
+  ```hql
+  ASIN(1)  // PI/2
+  ```
+</ParamField>
+
+<ParamField path="ACOS(x)" type="function">
+  Arccosine (returns radians)
+  
+  ```hql
+  ACOS(0)  // PI/2
+  ```
+</ParamField>
+
+<ParamField path="ATAN(x)" type="function">
+  Arctangent (returns radians)
+  
+  ```hql
+  ATAN(1)  // PI/4
+  ```
+</ParamField>
+
+<ParamField path="ATAN2(y, x)" type="function">
+  Two-argument arctangent
+  
+  ```hql
+  ATAN2(y, x)  // Angle from origin to point (x,y)
+  ```
+</ParamField>
+
+### Mathematical Constants
+
+<ParamField path="PI()" type="constant">
+  Returns π (3.14159...)
+  
+  ```hql
+  circumference <- MUL(MUL(2, PI), radius)
+  ```
+</ParamField>
+
+<ParamField path="E()" type="constant">
+  Returns Euler's number e (2.71828...)
+  
+  ```hql
+  exponential <- POW(E, x)
+  ```
+</ParamField>
+
+<Info>
+  All math functions are defined in `/home/daytona/workspace/source/helix-db/src/grammar.pest:240-252`
+</Info>
+
+## Aggregation Functions
+
+<ParamField path="MIN(values)" type="aggregate">
+  Minimum value from a set
+  
+  ```hql
+  MIN(price1, price2, price3)
+  ```
+</ParamField>
+
+<ParamField path="MAX(values)" type="aggregate">
+  Maximum value from a set
+  
+  ```hql
+  MAX(score1, score2, score3)
+  ```
+</ParamField>
+
+<ParamField path="SUM(values)" type="aggregate">
+  Sum of all values
+  
+  ```hql
+  SUM(item1, item2, item3)
+  ```
+</ParamField>
+
+<ParamField path="AVG(values)" type="aggregate">
+  Average of all values
+  
+  ```hql
+  AVG(rating1, rating2, rating3)
+  ```
+</ParamField>
+
+<ParamField path="COUNT(values)" type="aggregate">
+  Count of non-null values
+  
+  ```hql
+  COUNT(item1, item2, item3)
+  ```
+</ParamField>
+
+### Aggregation Examples
+
+```hql
+// Find price range
+QUERY get_price_range(category: String) =>
+  prices <- N<Product>
+    ::WHERE(_.category == category)
+    ::{price: _.price}
+  
+  min_price <- MIN(prices)
+  max_price <- MAX(prices)
+  avg_price <- AVG(prices)
+RETURN {
+  min: min_price,
+  max: max_price,
+  avg: avg_price
+}
+
+// Calculate statistics
+QUERY user_statistics(user_id: ID) =>
+  posts <- N({id: user_id})
+    ::OutE<AUTHORED>
+    ::ToN
+  
+  total_posts <- posts::COUNT
+  total_likes <- posts::InE<LIKES>::COUNT
+  avg_likes <- DIV(total_likes, total_posts)
+RETURN {
+  posts: total_posts,
+  likes: total_likes,
+  avg_likes_per_post: avg_likes
+}
+```
+
+## Path Finding Functions
+
+### ShortestPath
+
+Find shortest path using breadth-first search (BFS).
+
+```hql
+N({id: start_id})
+::ShortestPath<EdgeType>
+::To(N({id: end_id})::ID)
+```
+
+<ParamField path="EdgeType" type="string" required>
+  Edge type to traverse
+</ParamField>
+
+<ParamField path="To" type="ID" required>
+  Target node ID
+</ParamField>
+
+#### Example
+
+```hql
+QUERY find_connection(
+  user1_id: ID,
+  user2_id: ID
+) =>
+  path <- N({id: user1_id})
+    ::ShortestPath<FOLLOWS>
+    ::To(N({id: user2_id})::ID)
+RETURN path
+```
+
+### ShortestPathBFS
+
+Explicit breadth-first search (same as ShortestPath).
+
+```hql
+N({id: start_id})
+::ShortestPathBFS<EdgeType>
+::To(N({id: end_id})::ID)
+```
+
+### ShortestPathDijkstras
+
+Weighted shortest path using Dijkstra's algorithm.
+
+```hql
+N({id: start_id})
+::ShortestPathDijkstras<EdgeType>(weight_expression)
+::To(N({id: end_id})::ID)
+```
+
+<ParamField path="weight_expression" type="expression" required>
+  Expression to compute edge weight (e.g., `_.distance`, `_.cost`)
+</ParamField>
+
+#### Example
+
+```hql
+QUERY shortest_route(
+  city1_id: ID,
+  city2_id: ID
+) =>
+  path <- N({id: city1_id})
+    ::ShortestPathDijkstras<ROAD>(_.distance)
+    ::To(N({id: city2_id})::ID)
+RETURN {
+  path: path,
+  total_distance: SUM(path.distance)
+}
+```
+
+<Info>
+  Dijkstra implementation: `/home/daytona/workspace/source/helix-db/src/helix_engine/traversal_core/ops/util/paths.rs`
+</Info>
+
+### ShortestPathAStar
+
+A* shortest path with heuristic function.
+
+```hql
+N({id: start_id})
+::ShortestPathAStar<EdgeType>(
+  weight_expression,
+  heuristic
+)
+::To(N({id: end_id})::ID)
+```
+
+<ParamField path="weight_expression" type="expression" required>
+  Edge weight computation
+</ParamField>
+
+<ParamField path="heuristic" type="string" required>
+  Heuristic function name (e.g., "euclidean", "manhattan")
+</ParamField>
+
+#### Example
+
+```hql
+QUERY optimal_route(
+  start_id: ID,
+  end_id: ID
+) =>
+  path <- N({id: start_id})
+    ::ShortestPathAStar<ROAD>(
+      _.distance,
+      "euclidean"
+    )
+    ::To(N({id: end_id})::ID)
+RETURN path
+```
+
+<Info>
+  A* uses a heuristic to guide search, typically faster than Dijkstra for geographic data.
+  
+  Implementation: `/home/daytona/workspace/source/helix-db/src/helix_engine/traversal_core/ops/util/paths.rs`
+</Info>
+
+## Reranking Functions
+
+### RerankRRF
+
+Reciprocal Rank Fusion for combining multiple ranked lists.
+
+```hql
+results::RerankRRF(k: value)
+```
+
+<ParamField path="k" type="integer" default="60">
+  RRF constant. Higher values reduce the impact of rank position.
+</ParamField>
+
+**Formula:**
+```
+score(d) = Σ 1 / (k + rank_i(d))
+```
+
+where rank_i(d) is the rank of document d in the i-th result list.
+
+#### Example
+
+```hql
+QUERY hybrid_search(
+  query: String,
+  limit: I32
+) =>
+  // Get results from multiple sources
+  semantic <- SearchV<DocEmbedding>(Embed(query), limit)
+  keyword <- SearchBM25<Document>(query, limit)
+  
+  // Combine with RRF
+  combined <- [semantic, keyword]
+RETURN combined::RerankRRF(k: 60)::RANGE(0, limit)
+```
+
+<Info>
+  RRF is effective for combining heterogeneous ranking systems without score normalization.
+  
+  Implementation: `/home/daytona/workspace/source/helix-db/src/helix_engine/reranker/fusion/rrf.rs`
+</Info>
+
+### RerankMMR
+
+Maximal Marginal Relevance for diversity-aware ranking.
+
+```hql
+results::RerankMMR(
+  lambda: value,
+  distance: "metric"
+)
+```
+
+<ParamField path="lambda" type="float" required>
+  Relevance vs diversity trade-off (0.0 to 1.0)
+  - 1.0: Pure relevance (no diversity)
+  - 0.5: Balanced
+  - 0.0: Pure diversity (no relevance)
+</ParamField>
+
+<ParamField path="distance" type="string">
+  Distance metric: "cosine", "euclidean", or "dot". Defaults to "cosine".
+</ParamField>
+
+**Formula:**
+```
+MMR = argmax[Di ∈ R \ S] [
+  λ × sim(Di, Q) - (1-λ) × max[Dj ∈ S] sim(Di, Dj)
+]
+```
+
+where:
+- R is the full result set
+- S is the selected set
+- Q is the query
+- sim() is the similarity function
+
+#### Examples
+
+```hql
+// Balanced relevance and diversity
+QUERY diverse_recommendations(
+  query: String,
+  limit: I32
+) =>
+  SearchV<ProductEmbedding>(Embed(query), limit * 3)
+  ::RerankMMR(lambda: 0.5, distance: "cosine")
+  ::RANGE(0, limit)
+RETURN _
+
+// Emphasize diversity
+QUERY exploratory_search(
+  query: String,
+  limit: I32
+) =>
+  SearchV<ArticleEmbedding>(Embed(query), limit * 5)
+  ::RerankMMR(lambda: 0.3, distance: "cosine")
+  ::RANGE(0, limit)
+RETURN _
+```
+
+<Info>
+  MMR is particularly useful for:
+  - Recommendation systems (avoid similar recommendations)
+  - Search result diversification
+  - Exploratory interfaces
+  
+  Implementation: `/home/daytona/workspace/source/helix-db/src/helix_engine/reranker/fusion/mmr.rs`
+</Info>
+
+## Grouping and Aggregation
+
+### GROUP_BY
+
+Group results by one or more fields.
+
+```hql
+traversal::GROUP_BY(field1, field2, ...)
+```
+
+<ParamField path="fields" type="identifiers" required>
+  One or more field names to group by
+</ParamField>
+
+#### Example
+
+```hql
+QUERY posts_by_category_and_status() =>
+  N<Post>::GROUP_BY(category, status)
+RETURN [
+  {
+    category: _.category,
+    status: _.status,
+    count: _::COUNT
+  }
+]
+```
+
+### AGGREGATE_BY
+
+Aggregate results by fields (similar to GROUP_BY but with different semantics).
+
+```hql
+traversal::AGGREGATE_BY(field1, field2, ...)
+```
+
+#### Example
+
+```hql
+QUERY orders_by_customer() =>
+  N<Order>
+  ::AGGREGATE_BY(customer_id)
+RETURN [
+  {
+    customer_id: _.customer_id,
+    total_orders: _::COUNT,
+    total_amount: SUM(_.amount)
+  }
+]
+```
+
+<Info>
+  Grouping implementation: `/home/daytona/workspace/source/helix-db/src/helix_engine/traversal_core/ops/util/group_by.rs` and `aggregate.rs`
+</Info>
+
+## Embedding Functions
+
+### Embed
+
+Generate vector embedding from text using configured model.
+
+```hql
+Embed(text)
+```
+
+<ParamField path="text" type="string" required>
+  Text to embed
+</ParamField>
+
+#### Examples
+
+```hql
+// Generate embedding for search
+QUERY semantic_search(query: String, limit: I32) =>
+  SearchV<DocEmbedding>(Embed(query), limit)
+RETURN _
+
+// Store text as embedding
+QUERY add_document(content: String) =>
+  AddV<DocEmbedding>(
+    Embed(content),
+    {created_at: NOW}
+  )
+RETURN _.id
+
+// Update embedding
+QUERY update_embedding(
+  doc_id: ID,
+  new_content: String
+) =>
+  V<DocEmbedding>({document_id: doc_id})
+  ::UpsertV(
+    Embed(new_content),
+    {updated_at: NOW}
+  )
+RETURN true
+```
+
+<Info>
+  The embedding model is configured in `StorageConfig`:
+  ```rust
+  StorageConfig {
+      embedding_model: Some("text-embedding-3-small")
+  }
+  ```
+  
+  Grammar definition: `/home/daytona/workspace/source/helix-db/src/grammar.pest:231`
+</Info>
+
+## Date and Time Functions
+
+### NOW
+
+Returns current timestamp.
+
+```hql
+NOW
+```
+
+#### Examples
+
+```hql
+// Set creation timestamp
+AddN<User>({
+  name: name,
+  created_at: NOW
+})
+
+// Update timestamp
+N({id: user_id})
+::UPDATE({
+  last_login: NOW
+})
+
+// Filter by recency
+N<Post>::WHERE(
+  _.created_at > SUB(NOW, 86400)  // Last 24 hours
+)
+```
+
+<Note>
+  `NOW` returns a timestamp in the configured timezone. Use with Date field type for proper storage.
+</Note>
+
+## Utility Functions
+
+### EXISTS
+
+Check if a traversal returns any results.
+
+```hql
+EXISTS(traversal)
+```
+
+<ParamField path="traversal" required>
+  Traversal to check for results
+</ParamField>
+
+#### Examples
+
+```hql
+// Check if user has posts
+N<User>::WHERE(
+  EXISTS(_::OutE<AUTHORED>::ToN)
+)
+
+// Negated check
+N<User>::WHERE(
+  !EXISTS(_::OutE<BANNED>::ToN)
+)
+
+// Complex condition
+N<Product>::WHERE(
+  AND(
+    _.price < 100,
+    EXISTS(_::InE<REVIEWED>::FromN)
+  )
+)
+```
+
+<Info>
+  EXISTS implementation: `/home/daytona/workspace/source/helix-db/src/helix_engine/traversal_core/ops/util/exist.rs`
+</Info>
+
+## Best Practices
+
+<AccordionGroup>
+  <Accordion title="Use appropriate numeric types">
+    Choose F64 for decimal precision in financial calculations, I32/I64 for counters and IDs.
+    
+    ```hql
+    // Financial calculation
+    total <- ADD(MUL(price, quantity), tax)  // Use F64
+    
+    // Counter increment
+    count <- ADD(_.count, 1)  // Use I32
+    ```
+  </Accordion>
+  
+  <Accordion title="Combine math functions efficiently">
+    Build complex expressions by composing simple functions.
+    
+    ```hql
+    // Calculate compound interest
+    final_amount <- MUL(
+      principal,
+      POW(ADD(1, rate), years)
+    )
+    ```
+  </Accordion>
+  
+  <Accordion title="Use aggregations with GROUP_BY">
+    Combine grouping with aggregate functions for analytics.
+    
+    ```hql
+    N<Order>
+    ::GROUP_BY(customer_id, status)
+    ::{count: COUNT, total: SUM(_.amount)}
+    ```
+  </Accordion>
+  
+  <Accordion title="Choose appropriate path algorithm">
+    - BFS for unweighted graphs
+    - Dijkstra for weighted graphs
+    - A* for geographic/spatial data with good heuristics
+  </Accordion>
+  
+  <Accordion title="Tune RRF and MMR parameters">
+    - RRF k=60 is a good default, increase for more uniform weighting
+    - MMR lambda=0.7 balances relevance and diversity
+    - Test different values for your use case
+  </Accordion>
+</AccordionGroup>
+
+## Related
+
+<CardGroup cols={2}>
+  <Card title="Query Syntax" icon="code" href="/api/query-syntax">
+    Use functions in queries
+  </Card>
+  <Card title="Operations" icon="play" href="/api/operations">
+    Data manipulation operations
+  </Card>
+  <Card title="Data Types" icon="database" href="/api/data-types">
+    Numeric and other data types
+  </Card>
+  <Card title="Performance" icon="gauge-high" href="/advanced/performance">
+    Optimize function usage
+  </Card>
+</CardGroup>

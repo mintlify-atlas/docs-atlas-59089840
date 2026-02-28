@@ -1,0 +1,658 @@
+---
+title: Complex Graph Queries
+description: Master advanced graph traversal patterns for complex queries in HelixDB
+---
+
+## Overview
+
+HelixDB's graph traversal API enables complex queries that combine vector search, relationship traversals, filtering, aggregation, and ordering. The traversal system is built on lazy iterators for memory efficiency and composability.
+
+## Traversal Fundamentals
+
+### Starting a traversal
+
+All traversals begin with the `G` entry point:
+
+```rust
+use helix_db::{G, HelixDB};
+use std::sync::Arc;
+
+let db = Arc::new(HelixDB::new("./data", None).await?);
+let txn = db.read_txn()?;
+let arena = bumpalo::Bump::new();
+
+// Start a traversal
+let g = G::new(&db.storage, &txn, &arena);
+```
+
+### Source operations
+
+Begin traversals from different starting points:
+
+```rust
+// Get all nodes of a type
+let users = G::new(&db.storage, &txn, &arena)
+    .n_from_type("user")
+    .collect()?;
+
+// Get specific node by ID
+let user_id: u128 = /* ... */;
+let user = G::new(&db.storage, &txn, &arena)
+    .n_from_id(user_id)
+    .collect()?;
+
+// Get all vectors of a type
+let embeddings = G::new(&db.storage, &txn, &arena)
+    .v_from_type("document_embedding")
+    .collect()?;
+
+// Get all edges of a type
+let follows_edges = G::new(&db.storage, &txn, &arena)
+    .e_from_type("follows")
+    .collect()?;
+```
+
+## Basic Traversals
+
+<Steps>
+
+### Outgoing traversals
+
+Traverse to nodes connected by outgoing edges:
+
+```rust
+use helix_db::helix_engine::traversal_core::ops::out::out::OutAdapter;
+
+// Get friends of a user (node -> node)
+let friends = G::new(&db.storage, &txn, &arena)
+    .n_from_id(user_id)
+    .out_node("friends_with")
+    .collect()?;
+
+// Get user's document embeddings (node -> vector)
+let docs = G::new(&db.storage, &txn, &arena)
+    .n_from_id(user_id)
+    .out_vec("has_document", true)  // true = include vector data
+    .collect()?;
+
+// Get the edge objects themselves
+let friend_edges = G::new(&db.storage, &txn, &arena)
+    .n_from_id(user_id)
+    .out_e("friends_with")
+    .collect()?;
+```
+
+### Incoming traversals
+
+Traverse via incoming edges:
+
+```rust
+use helix_db::helix_engine::traversal_core::ops::in_::in_::InAdapter;
+
+// Get users who follow this user (node <- node)
+let followers = G::new(&db.storage, &txn, &arena)
+    .n_from_id(user_id)
+    .in_node("follows")
+    .collect()?;
+
+// Get documents that link to this document (node <- vector)
+let citing_docs = G::new(&db.storage, &txn, &arena)
+    .n_from_id(doc_id)
+    .in_vec("cites", true)
+    .collect()?;
+
+// Get incoming edges
+let follow_edges = G::new(&db.storage, &txn, &arena)
+    .n_from_id(user_id)
+    .in_e("follows")
+    .collect()?;
+```
+
+</Steps>
+
+## Multi-Hop Traversals
+
+### Chaining traversals
+
+Combine multiple traversal steps:
+
+```rust
+// Friends of friends (2 hops)
+let friends_of_friends = G::new(&db.storage, &txn, &arena)
+    .n_from_id(user_id)
+    .out_node("friends_with")      // 1st hop
+    .out_node("friends_with")      // 2nd hop
+    .dedup()                       // Remove duplicates
+    .collect()?;
+
+// Documents cited by documents I authored (3 hops)
+let related_docs = G::new(&db.storage, &txn, &arena)
+    .n_from_id(user_id)
+    .out_node("authored")          // My documents
+    .out_node("cites")             // Documents they cite
+    .out_vec("has_embedding", true) // Their embeddings
+    .collect()?;
+```
+
+### Bidirectional traversals
+
+Combine outgoing and incoming edges:
+
+```rust
+// Users who like things I also like
+let similar_users = G::new(&db.storage, &txn, &arena)
+    .n_from_id(user_id)
+    .out_node("likes")             // Things I like
+    .in_node("likes")              // Other users who like them
+    .dedup()
+    .filter(|u| u.id() != user_id) // Exclude myself
+    .collect()?;
+```
+
+## Filtering
+
+### Property filters
+
+Filter nodes by property values:
+
+```rust
+use helix_db::helix_engine::traversal_core::ops::util::filter_ref::FilterAdapter;
+
+// Users over 18
+let adults = G::new(&db.storage, &txn, &arena)
+    .n_from_type("user")
+    .filter(|user| {
+        user.get_property("age")
+            .and_then(|v| v.as_i32())
+            .map(|age| age >= 18)
+            .unwrap_or(false)
+    })
+    .collect()?;
+
+// Active users in the last 30 days
+let cutoff = chrono::Utc::now().timestamp() - (30 * 24 * 60 * 60);
+let active_users = G::new(&db.storage, &txn, &arena)
+    .n_from_type("user")
+    .filter(|user| {
+        user.get_property("last_active")
+            .and_then(|v| v.as_i64())
+            .map(|ts| ts > cutoff)
+            .unwrap_or(false)
+    })
+    .collect()?;
+```
+
+### Complex filters
+
+Combine multiple conditions:
+
+```rust
+// Premium users in a specific region
+let filtered = G::new(&db.storage, &txn, &arena)
+    .n_from_type("user")
+    .filter(|user| {
+        let is_premium = user.get_property("subscription")
+            .and_then(|v| v.as_str())
+            .map(|s| s == "premium")
+            .unwrap_or(false);
+        
+        let in_region = user.get_property("region")
+            .and_then(|v| v.as_str())
+            .map(|r| r == "us-west")
+            .unwrap_or(false);
+        
+        is_premium && in_region
+    })
+    .collect()?;
+```
+
+### Relationship existence filters
+
+Filter by relationship existence:
+
+```rust
+// Users who have posted content
+let content_creators = G::new(&db.storage, &txn, &arena)
+    .n_from_type("user")
+    .filter(|user| {
+        // Check if user has any outgoing "posted" edges
+        let has_posts = G::new(&db.storage, &txn, &arena)
+            .from_iter(std::iter::once(user.clone()), &arena)
+            .out_node("posted")
+            .collect()
+            .map(|posts| !posts.is_empty())
+            .unwrap_or(false);
+        has_posts
+    })
+    .collect()?;
+```
+
+## Aggregation and Grouping
+
+### Count results
+
+```rust
+use helix_db::helix_engine::traversal_core::ops::util::count::CountAdapter;
+
+// Count users by type
+let user_count = G::new(&db.storage, &txn, &arena)
+    .n_from_type("user")
+    .count()?;
+
+println!("Total users: {}", user_count);
+```
+
+### Group by properties
+
+```rust
+use helix_db::helix_engine::traversal_core::ops::util::group_by::GroupByAdapter;
+
+// Group users by region
+let by_region = G::new(&db.storage, &txn, &arena)
+    .n_from_type("user")
+    .group_by(&["region"], true)?
+    .into_count();
+
+println!("Users by region: {:?}", by_region);
+
+// Group by multiple properties
+let by_region_and_plan = G::new(&db.storage, &txn, &arena)
+    .n_from_type("user")
+    .group_by(&["region", "subscription"], true)?
+    .into_count();
+```
+
+### Aggregate values
+
+```rust
+use helix_db::helix_engine::traversal_core::ops::util::aggregate::AggregateAdapter;
+
+// Aggregate by document type
+let doc_stats = G::new(&db.storage, &txn, &arena)
+    .n_from_type("document")
+    .aggregate_by(&["type"], true)?
+    .into_count();
+
+println!("Documents by type: {:?}", doc_stats);
+```
+
+## Ordering and Limiting
+
+### Sort results
+
+```rust
+use helix_db::helix_engine::traversal_core::ops::util::order::OrderByAdapter;
+
+// Order users by registration date (ascending)
+let oldest_first = G::new(&db.storage, &txn, &arena)
+    .n_from_type("user")
+    .order_by_asc(|user| {
+        user.get_property("registered_at")
+            .cloned()
+            .unwrap_or(Value::I64(0))
+    })
+    .collect()?;
+
+// Order by score (descending)
+let top_rated = G::new(&db.storage, &txn, &arena)
+    .n_from_type("document")
+    .order_by_desc(|doc| {
+        doc.get_property("rating")
+            .cloned()
+            .unwrap_or(Value::F64(0.0))
+    })
+    .collect()?;
+```
+
+### Limit and pagination
+
+```rust
+use helix_db::helix_engine::traversal_core::ops::util::range::RangeAdapter;
+
+// Get first 10 results
+let first_page = G::new(&db.storage, &txn, &arena)
+    .n_from_type("user")
+    .range(0, 10)
+    .collect()?;
+
+// Get next 10 results (pagination)
+let second_page = G::new(&db.storage, &txn, &arena)
+    .n_from_type("user")
+    .range(10, 20)
+    .collect()?;
+
+// Skip first 100, take next 20
+let offset_results = G::new(&db.storage, &txn, &arena)
+    .n_from_type("document")
+    .order_by_desc(|doc| {
+        doc.get_property("created_at")
+            .cloned()
+            .unwrap_or(Value::I64(0))
+    })
+    .range(100, 120)
+    .collect()?;
+```
+
+## Path Finding
+
+### Find all paths
+
+```rust
+use helix_db::helix_engine::traversal_core::ops::util::paths::PathsAdapter;
+
+// Find all paths from user A to user B (up to 3 hops)
+let paths = G::new(&db.storage, &txn, &arena)
+    .n_from_id(user_a_id)
+    .paths(
+        "friends_with",  // Edge label to traverse
+        Some(user_b_id), // Target node
+        Some(3),         // Max depth
+    )
+    .collect()?;
+
+for path in paths {
+    println!("Found path: {:?}", path);
+}
+```
+
+### Shortest path
+
+Find the shortest connection:
+
+```rust
+// BFS traversal to find shortest path
+fn shortest_path(
+    db: &HelixDB,
+    start_id: u128,
+    end_id: u128,
+    edge_label: &str,
+    max_depth: usize,
+) -> Result<Option<Vec<u128>>> {
+    use std::collections::{HashMap, VecDeque};
+    
+    let txn = db.read_txn()?;
+    let arena = bumpalo::Bump::new();
+    
+    let mut queue = VecDeque::new();
+    let mut visited = HashMap::new();
+    let mut parents = HashMap::new();
+    
+    queue.push_back((start_id, 0));
+    visited.insert(start_id, true);
+    
+    while let Some((current_id, depth)) = queue.pop_front() {
+        if current_id == end_id {
+            // Reconstruct path
+            let mut path = vec![end_id];
+            let mut current = end_id;
+            while let Some(&parent) = parents.get(&current) {
+                path.push(parent);
+                current = parent;
+            }
+            path.reverse();
+            return Ok(Some(path));
+        }
+        
+        if depth >= max_depth {
+            continue;
+        }
+        
+        // Get neighbors
+        let neighbors = G::new(&db.storage, &txn, &arena)
+            .n_from_id(current_id)
+            .out_node(edge_label)
+            .collect()?;
+        
+        for neighbor in neighbors {
+            let neighbor_id = neighbor.id();
+            if !visited.contains_key(&neighbor_id) {
+                visited.insert(neighbor_id, true);
+                parents.insert(neighbor_id, current_id);
+                queue.push_back((neighbor_id, depth + 1));
+            }
+        }
+    }
+    
+    Ok(None) // No path found
+}
+```
+
+## Advanced Patterns
+
+### Intersection of results
+
+Find common elements between two traversals:
+
+```rust
+use helix_db::helix_engine::traversal_core::ops::util::intersect::IntersectAdapter;
+
+// Find mutual friends
+let user_a_friends = G::new(&db.storage, &txn, &arena)
+    .n_from_id(user_a_id)
+    .out_node("friends_with")
+    .collect()?;
+
+let user_b_friends = G::new(&db.storage, &txn, &arena)
+    .n_from_id(user_b_id)
+    .out_node("friends_with")
+    .collect()?;
+
+let mutual_friends = G::new(&db.storage, &txn, &arena)
+    .from_iter(user_a_friends.into_iter(), &arena)
+    .intersect(user_b_friends.into_iter())
+    .collect()?;
+```
+
+### Deduplication
+
+Remove duplicate results:
+
+```rust
+use helix_db::helix_engine::traversal_core::ops::util::dedup::DedupAdapter;
+
+// Get unique authors from multiple sources
+let all_authors = G::new(&db.storage, &txn, &arena)
+    .n_from_type("document")
+    .out_node("authored_by")
+    .dedup()  // Remove duplicate authors
+    .collect()?;
+```
+
+### Conditional traversals
+
+Traverse different paths based on conditions:
+
+```rust
+// Get related content based on user type
+let related = G::new(&db.storage, &txn, &arena)
+    .n_from_id(user_id)
+    .collect()?
+    .into_iter()
+    .flat_map(|user| {
+        let is_premium = user.get_property("subscription")
+            .and_then(|v| v.as_str())
+            .map(|s| s == "premium")
+            .unwrap_or(false);
+        
+        if is_premium {
+            // Premium users see curated content
+            G::new(&db.storage, &txn, &arena)
+                .n_from_id(user.id())
+                .out_node("curated_for")
+                .collect()
+                .unwrap_or_default()
+        } else {
+            // Free users see popular content
+            G::new(&db.storage, &txn, &arena)
+                .n_from_type("content")
+                .filter(|c| {
+                    c.get_property("views")
+                        .and_then(|v| v.as_i64())
+                        .map(|views| views > 10000)
+                        .unwrap_or(false)
+                })
+                .collect()
+                .unwrap_or_default()
+        }
+    })
+    .collect::<Vec<_>>();
+```
+
+## Combining with Vector Search
+
+### Graph-constrained vector search
+
+Perform vector search within graph-defined boundaries:
+
+```rust
+use helix_db::helix_engine::traversal_core::ops::vectors::brute_force_search::BruteForceSearchVAdapter;
+
+// Search only within user's accessible documents
+let query_embedding = embed!(db, "search query")?;
+
+let accessible_docs = G::new(&db.storage, &txn, &arena)
+    .n_from_id(user_id)
+    .out_node("member_of")             // User's groups
+    .out_node("has_access_to")         // Documents they can access
+    .in_vec("document_vector", true)   // Get embeddings
+    .brute_force_search_v(&query_embedding, 10)
+    .collect()?;
+```
+
+### Hybrid ranking
+
+Combine graph centrality with vector similarity:
+
+```rust
+// Find relevant and well-connected documents
+let candidates = G::new(&db.storage, &txn, &arena)
+    .search_v::<fn(&HVector, &RoTxn) -> bool, _>(
+        &query_embedding,
+        50,
+        "document",
+        None
+    )
+    .collect()?;
+
+// Calculate composite score: similarity * citation_count
+let mut scored: Vec<_> = candidates
+    .into_iter()
+    .filter_map(|c| {
+        if let TraversalValue::Vector(vec) = c {
+            let similarity = vec.get_distance();
+            let id = vec.id();
+            
+            // Count citations
+            let citation_count = G::new(&db.storage, &txn, &arena)
+                .v_from_id(*id)
+                .in_node("cites")
+                .count()
+                .unwrap_or(0) as f64;
+            
+            let score = similarity * (1.0 + citation_count.ln());
+            Some((vec, score))
+        } else {
+            None
+        }
+    })
+    .collect();
+
+scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+let top_results: Vec<_> = scored.into_iter().take(10).collect();
+```
+
+## Transaction Management
+
+### Read transactions
+
+```rust
+// Long-lived read transaction
+let txn = db.read_txn()?;
+
+// Multiple queries with same snapshot
+let users = G::new(&db.storage, &txn, &arena)
+    .n_from_type("user")
+    .collect()?;
+
+let docs = G::new(&db.storage, &txn, &arena)
+    .n_from_type("document")
+    .collect()?;
+
+// Transaction automatically dropped
+```
+
+### Write transactions
+
+```rust
+// Write transaction for mutations
+let mut txn = db.write_txn()?;
+
+// Add nodes
+let user = G::new(&db.storage, &mut txn, &arena)
+    .add_n("user", Some(properties))
+    .collect()?;
+
+// Add edges
+G::new(&db.storage, &mut txn, &arena)
+    .add_e(user[0].id(), doc_id, "authored", None)
+    .collect()?;
+
+// Commit changes
+txn.commit()?;
+```
+
+## Performance Tips
+
+### Efficient filtering
+
+```rust
+// Filter early in the traversal pipeline
+let efficient = G::new(&db.storage, &txn, &arena)
+    .n_from_type("user")
+    .filter(|u| /* narrow filter */)  // Filter before traversal
+    .out_node("posted")
+    .collect()?;
+
+// Avoid filtering after expensive operations
+```
+
+### Batch operations
+
+```rust
+// Collect IDs first, then batch process
+let user_ids: Vec<u128> = G::new(&db.storage, &txn, &arena)
+    .n_from_type("user")
+    .collect()?
+    .into_iter()
+    .map(|u| u.id())
+    .collect();
+
+// Process in batches
+for chunk in user_ids.chunks(100) {
+    // Process batch...
+}
+```
+
+### Arena reuse
+
+```rust
+// Reuse arena for multiple queries
+let arena = bumpalo::Bump::with_capacity(10 * 1024 * 1024);
+
+for query in queries {
+    let results = G::new(&db.storage, &txn, &arena)
+        .n_from_type("user")
+        .filter(|u| /* query-specific filter */)
+        .collect()?;
+    
+    // Process results...
+    
+    arena.reset();  // Clear for next query
+}
+```
+
+## Next Steps
+
+- Build [RAG Applications](/guides/rag-applications) with graph-enhanced retrieval
+- Optimize [Vector Search](/guides/vector-search) within graph contexts
+- Use [MCP Integration](/guides/mcp-integration) for AI agent queries

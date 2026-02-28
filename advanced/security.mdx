@@ -1,0 +1,665 @@
+---
+title: 'Security Model'
+description: 'Security considerations and best practices for HelixDB'
+icon: 'shield'
+---
+
+## Overview
+
+HelixDB is designed as an embedded database, meaning security is primarily the responsibility of the host application. This document covers security considerations, data protection, and best practices.
+
+## Embedded Database Security
+
+### Trust Boundary
+
+<Warning>
+  HelixDB operates **within** the application's trust boundary. The host application has full access to all data.
+  
+  **Security model**:
+  - Application code is trusted
+  - Database access is not authenticated
+  - No built-in authorization or access control
+  - File system permissions control database access
+</Warning>
+
+**Implications**:
+- Secure the host application
+- Use OS-level permissions for database files
+- Implement application-level access control
+- Protect connection to database (file paths, environment)
+
+### File System Security
+
+Database files must be protected at the OS level:
+
+```bash
+# Set restrictive permissions
+chmod 600 data.mdb lock.mdb
+chown app_user:app_group data.mdb lock.mdb
+
+# Ensure directory permissions
+chmod 700 /path/to/db/
+chown app_user:app_group /path/to/db/
+```
+
+<AccordionGroup>
+  <Accordion title="Linux/Unix permissions">
+    **Recommended**:
+    - Database files: 600 (rw-------)
+    - Database directory: 700 (rwx------)
+    - Owner: Application user
+    - Group: Application group
+    
+    **Why**:
+    - Prevents other users from reading database
+    - Prevents privilege escalation
+    - Limits attack surface
+  </Accordion>
+  
+  <Accordion title="Container environments">
+    **Best practices**:
+    - Mount database volume with appropriate permissions
+    - Run container as non-root user
+    - Use read-only filesystem except for database mount
+    
+    ```dockerfile
+    FROM rust:1.70 as builder
+    # ... build steps ...
+    
+    FROM debian:bookworm-slim
+    RUN useradd -m -u 1000 app
+    USER app
+    VOLUME ["/data"]
+    CMD ["./helix-app"]
+    ```
+  </Accordion>
+  
+  <Accordion title="Cloud deployments">
+    **Considerations**:
+    - Use encrypted volumes (AWS EBS, GCP Persistent Disks)
+    - Enable encryption at rest
+    - Use IAM roles for access control
+    - Regular snapshots to secure storage
+  </Accordion>
+</AccordionGroup>
+
+## Data Protection
+
+### Encryption at Rest
+
+HelixDB does not provide built-in encryption. Use OS-level encryption:
+
+<ParamField path="Linux LUKS" type="Full disk encryption">
+  **Setup**:
+  ```bash
+  # Create encrypted volume
+  cryptsetup luksFormat /dev/sdb
+  cryptsetup luksOpen /dev/sdb helix_encrypted
+  mkfs.ext4 /dev/mapper/helix_encrypted
+  mount /dev/mapper/helix_encrypted /mnt/helix
+  ```
+  
+  **Benefits**:
+  - Transparent to application
+  - Protects data at rest
+  - OS-managed key storage
+</ParamField>
+
+<ParamField path="AWS EBS Encryption" type="Cloud encryption">
+  **Setup**:
+  ```bash
+  # Create encrypted EBS volume
+  aws ec2 create-volume \
+    --encrypted \
+    --kms-key-id alias/helix-db \
+    --size 100 \
+    --volume-type gp3
+  ```
+  
+  **Benefits**:
+  - Managed by AWS
+  - KMS integration
+  - Automatic key rotation
+</ParamField>
+
+<ParamField path="Application-level Encryption" type="Field encryption">
+  **Pattern**: Encrypt sensitive fields before storage
+  
+  ```rust
+  // Encrypt sensitive data
+  let encrypted_ssn = encrypt(user.ssn, key)?;
+  
+  // Store encrypted value
+  AddN<User>({
+      name: user.name,
+      ssn_encrypted: encrypted_ssn,  // Encrypted
+  })
+  ```
+  
+  **Considerations**:
+  - Cannot query encrypted fields
+  - Key management required
+  - Performance overhead
+</ParamField>
+
+### Encryption in Transit
+
+Since HelixDB is embedded, there is no network transit. However:
+
+<AccordionGroup>
+  <Accordion title="If exposing via API">
+    **Use TLS/HTTPS**:
+    ```rust
+    // Example with Axum
+    let app = Router::new()
+        .route("/query", post(execute_query));
+    
+    // Serve with TLS
+    axum_server::bind_rustls(
+        addr,
+        RustlsConfig::from_pem_file(cert_path, key_path).await?
+    )
+    .serve(app.into_make_service())
+    .await?;
+    ```
+  </Accordion>
+  
+  <Accordion title="If using over network filesystem">
+    **Avoid if possible**:
+    - LMDB is designed for local filesystems
+    - Network filesystems can cause corruption
+    - If required, use encrypted network protocol (NFS with Kerberos, etc.)
+  </Accordion>
+</AccordionGroup>
+
+## Input Validation
+
+### Query Parameter Validation
+
+Always validate input parameters:
+
+```rust
+// Bad: No validation
+QUERY get_user(user_id: String) =>
+  N<User>({id: user_id})
+RETURN _
+
+// Good: Validate UUID format
+fn validate_uuid(id: &str) -> Result<Uuid, Error> {
+    Uuid::parse_str(id)
+        .map_err(|_| Error::InvalidUuid)
+}
+
+let user_id = validate_uuid(&input)?;
+let result = execute_query(user_id)?;
+```
+
+### Type Safety
+
+HelixQL's type system provides compile-time safety:
+
+```hql
+// Type-checked at compile time
+QUERY create_user(
+  name: String,      // Must be string
+  age: I32,          // Must be integer
+  email: String      // Must be string
+) =>
+  // Type mismatch caught by compiler
+  AddN<User>({
+    name: name,
+    age: age,
+    email: email
+  })
+RETURN _.id
+```
+
+**Benefits**:
+- Prevents type confusion attacks
+- No SQL-injection-style vulnerabilities
+- Catches errors before runtime
+
+### Size Limits
+
+Enforce size limits on inputs:
+
+```rust
+const MAX_NAME_LENGTH: usize = 100;
+const MAX_BIO_LENGTH: usize = 1000;
+const MAX_ARRAY_SIZE: usize = 100;
+
+fn validate_input(user: &UserInput) -> Result<(), Error> {
+    if user.name.len() > MAX_NAME_LENGTH {
+        return Err(Error::NameTooLong);
+    }
+    if user.bio.len() > MAX_BIO_LENGTH {
+        return Err(Error::BioTooLong);
+    }
+    if user.tags.len() > MAX_ARRAY_SIZE {
+        return Err(Error::TooManyTags);
+    }
+    Ok(())
+}
+```
+
+## Access Control
+
+### Application-Level Authorization
+
+Implement access control in your application:
+
+```rust
+// Define permissions
+enum Permission {
+    ReadUser,
+    WriteUser,
+    DeleteUser,
+    ReadAllUsers,
+}
+
+// Check permissions before queries
+fn execute_user_query(
+    actor: &User,
+    target_id: Uuid,
+) -> Result<User, Error> {
+    // Check if actor can read target
+    if !has_permission(actor, Permission::ReadUser, target_id) {
+        return Err(Error::Unauthorized);
+    }
+    
+    // Execute query
+    let result = db.execute("get_user", target_id)?;
+    Ok(result)
+}
+```
+
+### Row-Level Security
+
+Implement in application logic:
+
+```rust
+// Filter by ownership
+QUERY get_user_posts(user_id: ID, viewer_id: ID) =>
+  posts <- N({id: user_id})::OutE<AUTHORED>::ToN
+  
+  // Filter based on visibility
+  visible <- posts::WHERE(
+    OR(
+      _.author_id == viewer_id,     // Own posts
+      _.visibility == "public",      // Public posts
+      EXISTS(_::InE<FOLLOWING>::FromN::WHERE(_.id == viewer_id))  // Following
+    )
+  )
+RETURN visible
+```
+
+### Audit Logging
+
+Log all data access:
+
+```rust
+struct AuditLog {
+    timestamp: DateTime<Utc>,
+    user_id: Uuid,
+    action: String,
+    resource_type: String,
+    resource_id: Uuid,
+    result: String,
+}
+
+fn execute_with_audit<T>(
+    user_id: Uuid,
+    action: &str,
+    f: impl FnOnce() -> Result<T, Error>,
+) -> Result<T, Error> {
+    let start = Utc::now();
+    
+    let result = f();
+    
+    // Log the action
+    audit_log.write(AuditLog {
+        timestamp: start,
+        user_id,
+        action: action.to_string(),
+        result: match &result {
+            Ok(_) => "success".to_string(),
+            Err(e) => format!("error: {}", e),
+        },
+    })?;
+    
+    result
+}
+```
+
+## Data Sanitization
+
+### Output Encoding
+
+Sanitize data before displaying:
+
+```rust
+use html_escape::encode_text;
+
+// Escape HTML in output
+let user_bio = get_user_bio(user_id)?;
+let safe_bio = encode_text(&user_bio);
+render_template("profile", safe_bio);
+```
+
+### PII Protection
+
+Mask or redact sensitive data:
+
+```rust
+fn redact_email(email: &str) -> String {
+    let parts: Vec<&str> = email.split('@').collect();
+    if parts.len() != 2 {
+        return "***@***".to_string();
+    }
+    
+    let local = parts[0];
+    let domain = parts[1];
+    
+    let redacted_local = if local.len() <= 2 {
+        "**".to_string()
+    } else {
+        format!("{}***", &local[..2])
+    };
+    
+    format!("{}@{}", redacted_local, domain)
+}
+
+// Usage
+let public_email = redact_email(&user.email);
+// "alice@example.com" -> "al***@example.com"
+```
+
+### Data Retention
+
+Implement data retention policies:
+
+```rust
+// Delete old data
+QUERY cleanup_old_sessions(retention_days: I32) =>
+  cutoff <- SUB(NOW, MUL(retention_days, 86400))
+  
+  old_sessions <- N<Session>
+    ::WHERE(_.last_active < cutoff)
+  
+  DROP old_sessions
+RETURN true
+
+// Schedule regular cleanup
+let retention_policy = RetentionPolicy {
+    sessions: Duration::days(30),
+    audit_logs: Duration::days(365),
+    deleted_users: Duration::days(90),
+};
+```
+
+## Backup Security
+
+### Secure Backups
+
+<AccordionGroup>
+  <Accordion title="Encrypt backups">
+    ```bash
+    # Create encrypted backup
+    helix-backup /data/helix.db | \
+      gpg --encrypt --recipient backup@example.com | \
+      aws s3 cp - s3://backups/helix-$(date +%Y%m%d).db.gpg
+    ```
+  </Accordion>
+  
+  <Accordion title="Secure backup storage">
+    - Use separate AWS account for backups
+    - Enable MFA for backup access
+    - Use S3 bucket policies to restrict access
+    - Enable versioning for backup buckets
+    - Regular backup restoration tests
+  </Accordion>
+  
+  <Accordion title="Backup retention">
+    ```json
+    {
+      "Rules": [
+        {
+          "Status": "Enabled",
+          "Expiration": {"Days": 90},
+          "Transitions": [
+            {"Days": 30, "StorageClass": "GLACIER"}
+          ]
+        }
+      ]
+    }
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## Denial of Service Protection
+
+### Resource Limits
+
+Set limits on queries:
+
+```rust
+const MAX_QUERY_TIME: Duration = Duration::from_secs(30);
+const MAX_RESULT_SIZE: usize = 10_000;
+const MAX_TRAVERSAL_DEPTH: usize = 5;
+
+fn execute_with_limits(
+    query: &str,
+    params: Params,
+) -> Result<Vec<Value>, Error> {
+    // Set timeout
+    let timeout = Timeout::new(MAX_QUERY_TIME);
+    
+    // Execute query
+    let result = timeout.run(|| {
+        db.execute(query, params)
+    })?;
+    
+    // Check result size
+    if result.len() > MAX_RESULT_SIZE {
+        return Err(Error::ResultTooLarge);
+    }
+    
+    Ok(result)
+}
+```
+
+### Rate Limiting
+
+Implement query rate limits:
+
+```rust
+use governor::{Quota, RateLimiter};
+
+let limiter = RateLimiter::keyed(
+    Quota::per_second(nonzero!(100u32))  // 100 queries/sec per user
+);
+
+fn execute_query(
+    user_id: Uuid,
+    query: &str,
+) -> Result<Value, Error> {
+    // Check rate limit
+    if limiter.check_key(&user_id).is_err() {
+        return Err(Error::RateLimitExceeded);
+    }
+    
+    // Execute query
+    db.execute(query)
+}
+```
+
+### Query Complexity
+
+Limit complex queries:
+
+```rust
+fn analyze_query_complexity(query: &ParsedQuery) -> usize {
+    let mut complexity = 0;
+    
+    // Count traversal steps
+    complexity += query.traversals.len() * 10;
+    
+    // Penalize deep traversals
+    complexity += query.max_depth() * 50;
+    
+    // Penalize cartesian products
+    complexity += query.joins.len() * 100;
+    
+    complexity
+}
+
+const MAX_COMPLEXITY: usize = 1000;
+
+if analyze_query_complexity(&query) > MAX_COMPLEXITY {
+    return Err(Error::QueryTooComplex);
+}
+```
+
+## Vulnerability Mitigation
+
+### Dependency Management
+
+Keep dependencies updated:
+
+```bash
+# Check for vulnerable dependencies
+cargo audit
+
+# Update dependencies
+cargo update
+
+# Use Dependabot for automatic updates
+```
+
+### Memory Safety
+
+Rust provides memory safety:
+- No buffer overflows
+- No use-after-free
+- No data races (with proper usage)
+- Type safety prevents many vulnerabilities
+
+<Note>
+  Unsafe code blocks in HelixDB are carefully audited and limited to LMDB FFI boundaries.
+</Note>
+
+### Error Handling
+
+Avoid leaking sensitive information in errors:
+
+```rust
+// Bad: Exposes internal details
+fn get_user(id: Uuid) -> Result<User, String> {
+    db.query("SELECT * FROM users WHERE id = ?", id)
+        .map_err(|e| format!("Database error: {}", e))  // Leaks details
+}
+
+// Good: Generic error message
+fn get_user(id: Uuid) -> Result<User, Error> {
+    db.query("SELECT * FROM users WHERE id = ?", id)
+        .map_err(|e| {
+            log::error!("Database error: {}", e);  // Log details
+            Error::Internal  // Return generic error
+        })
+}
+```
+
+## Security Checklist
+
+<AccordionGroup>
+  <Accordion title="File system security">
+    - [ ] Database files have restrictive permissions (600)
+    - [ ] Database directory has restrictive permissions (700)
+    - [ ] Database owned by application user
+    - [ ] No world-readable files
+  </Accordion>
+  
+  <Accordion title="Data protection">
+    - [ ] Encryption at rest enabled (OS or cloud)
+    - [ ] Sensitive fields encrypted at application level
+    - [ ] Backups encrypted
+    - [ ] TLS enabled for network access (if applicable)
+  </Accordion>
+  
+  <Accordion title="Input validation">
+    - [ ] All user inputs validated
+    - [ ] Size limits enforced
+    - [ ] Type safety leveraged
+    - [ ] SQL-injection-style attacks prevented by design
+  </Accordion>
+  
+  <Accordion title="Access control">
+    - [ ] Application-level authorization implemented
+    - [ ] Row-level security enforced
+    - [ ] Audit logging enabled
+    - [ ] Principle of least privilege applied
+  </Accordion>
+  
+  <Accordion title="DoS protection">
+    - [ ] Query timeouts configured
+    - [ ] Result size limits enforced
+    - [ ] Rate limiting implemented
+    - [ ] Query complexity limits set
+  </Accordion>
+  
+  <Accordion title="Operations">
+    - [ ] Regular security updates
+    - [ ] Dependency scanning enabled
+    - [ ] Backup encryption configured
+    - [ ] Incident response plan documented
+  </Accordion>
+</AccordionGroup>
+
+## Best Practices Summary
+
+<CardGroup cols={2}>
+  <Card title="Defense in Depth" icon="layer-group">
+    - Multiple security layers
+    - OS-level protection
+    - Application-level controls
+    - Network security (if applicable)
+  </Card>
+  
+  <Card title="Principle of Least Privilege" icon="user-shield">
+    - Minimal file permissions
+    - Role-based access control
+    - Separate backup accounts
+    - Limited query capabilities
+  </Card>
+  
+  <Card title="Security by Design" icon="shield-halved">
+    - Type safety
+    - Memory safety
+    - No injection vulnerabilities
+    - Compile-time checks
+  </Card>
+  
+  <Card title="Monitoring and Auditing" icon="eye">
+    - Audit all access
+    - Monitor for anomalies
+    - Regular security reviews
+    - Incident response ready
+  </Card>
+</CardGroup>
+
+## Related
+
+<CardGroup cols={2}>
+  <Card title="Storage Engine" icon="hard-drive" href="/advanced/storage-engine">
+    File structure and permissions
+  </Card>
+  <Card title="Performance" icon="gauge-high" href="/advanced/performance">
+    Resource limits and optimization
+  </Card>
+  <Card title="Query Syntax" icon="code" href="/api/query-syntax">
+    Type-safe query construction
+  </Card>
+  <Card title="Operations" icon="play" href="/api/operations">
+    Data manipulation operations
+  </Card>
+</CardGroup>

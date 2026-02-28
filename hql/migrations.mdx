@@ -1,0 +1,604 @@
+---
+title: 'Schema Migrations'
+description: 'Version and migrate your HelixDB schemas'
+---
+
+## Migration Basics
+
+HelixDB supports versioned schemas with automated migration paths. Migrations allow you to evolve your database schema over time while preserving existing data.
+
+<ParamField path="MIGRATION" type="keyword">
+  Declares a migration between two schema versions
+</ParamField>
+
+## Schema Versioning
+
+### Version Declaration
+
+Declare schema versions using `schema::N` syntax:
+
+```hql
+schema::1 {
+    N::User {
+        name: String,
+        age: I32
+    }
+}
+```
+
+<ParamField path="schema::N" type="version">
+  Declares schema version number (positive integer)
+</ParamField>
+
+### Multiple Versions
+
+Define multiple schema versions in separate blocks:
+
+<CodeGroup>
+
+```hql Version 1
+schema::1 {
+    N::User {
+        name: String,
+        age: I32
+    }
+}
+```
+
+```hql Version 2
+schema::2 {
+    N::User {
+        name: String,
+        age: I32,
+        email: String,
+        created_at: Date DEFAULT NOW
+    }
+}
+```
+
+</CodeGroup>
+
+## Migration Syntax
+
+Migrations transform data from one schema version to another:
+
+```hql
+MIGRATION schema::1 => schema::2 {
+    // migration body
+}
+```
+
+<ParamField path="schema::X => schema::Y" type="signature">
+  Defines migration from version X to version Y
+</ParamField>
+
+## Migration Operations
+
+### Node Migrations
+
+Migrate node data between schema versions:
+
+<CodeGroup>
+
+```hql Add Fields
+MIGRATION schema::1 => schema::2 {
+    N::User => N::User {
+        name: name,
+        age: age,
+        email: "default@example.com",
+        created_at: NOW
+    }
+}
+```
+
+```hql Rename Fields
+MIGRATION schema::1 => schema::2 {
+    N::User => N::User {
+        full_name: name,
+        user_age: age
+    }
+}
+```
+
+```hql Remove Fields
+MIGRATION schema::1 => schema::2 {
+    N::User => N::User {
+        name: name
+        // age field removed (not mapped)
+    }
+}
+```
+
+</CodeGroup>
+
+### Edge Migrations
+
+Migrate edge data and properties:
+
+```hql
+MIGRATION schema::1 => schema::2 {
+    E::Knows => E::Knows {
+        Properties: {
+            since: since,
+            strength: 1.0
+        }
+    }
+}
+```
+
+### Vector Migrations
+
+Migrate vector data:
+
+```hql
+MIGRATION schema::1 => schema::2 {
+    V::Document => V::Document {
+        content: content,
+        metadata: ""
+    }
+}
+```
+
+## Type Casting
+
+Cast field values to new types during migration:
+
+<ParamField path="AS Type" type="operator">
+  Casts field to specified type
+</ParamField>
+
+<CodeGroup>
+
+```hql String to Number
+MIGRATION schema::1 => schema::2 {
+    N::User => N::User {
+        age: age_string AS I32
+    }
+}
+```
+
+```hql Number to String
+MIGRATION schema::1 => schema::2 {
+    N::User => N::User {
+        age_text: age AS String
+    }
+}
+```
+
+```hql ID Conversion
+MIGRATION schema::1 => schema::2 {
+    N::User => N::User {
+        user_id: id_string AS ID
+    }
+}
+```
+
+```hql Date Conversion
+MIGRATION schema::1 => schema::2 {
+    N::User => N::User {
+        created: timestamp AS Date
+    }
+}
+```
+
+</CodeGroup>
+
+## Migration Values
+
+### Field Mapping
+
+Map old fields to new fields:
+
+```hql
+MIGRATION schema::1 => schema::2 {
+    N::User => N::User {
+        name: old_name,
+        age: user_age
+    }
+}
+```
+
+### Default Values
+
+Provide default values for new fields:
+
+<CodeGroup>
+
+```hql Primitive Defaults
+MIGRATION schema::1 => schema::2 {
+    N::User => N::User {
+        name: name,
+        active: true,
+        score: 0,
+        rating: 5.0,
+        bio: "No bio"
+    }
+}
+```
+
+```hql Special Values
+MIGRATION schema::1 => schema::2 {
+    N::User => N::User {
+        name: name,
+        created_at: NOW,
+        deleted: NONE
+    }
+}
+```
+
+</CodeGroup>
+
+<ParamField path="NOW" type="special">
+  Current timestamp for Date fields
+</ParamField>
+
+<ParamField path="NONE" type="special">
+  Null/empty value
+</ParamField>
+
+## Renaming Entities
+
+Rename node, edge, or vector types:
+
+<CodeGroup>
+
+```hql Rename Node
+MIGRATION schema::1 => schema::2 {
+    N::User => N::Account {
+        name: name,
+        age: age
+    }
+}
+```
+
+```hql Rename Edge
+MIGRATION schema::1 => schema::2 {
+    E::Knows => E::FriendOf {
+        Properties: {
+            since: since
+        }
+    }
+}
+```
+
+```hql Rename Vector
+MIGRATION schema::1 => schema::2 {
+    V::Document => V::Article {
+        content: content
+    }
+}
+```
+
+</CodeGroup>
+
+## Deleting Entities
+
+Remove entities during migration:
+
+```hql
+MIGRATION schema::1 => schema::2 {
+    N::OldType => _:: {
+        // Entity will be deleted
+    }
+}
+```
+
+<ParamField path="_::" type="special">
+  Anonymous type - marks entity for deletion
+</ParamField>
+
+## Complete Migration Examples
+
+### Simple Field Addition
+
+<CodeGroup>
+
+```hql Schema v1
+schema::1 {
+    N::User {
+        name: String,
+        age: I32
+    }
+}
+```
+
+```hql Schema v2
+schema::2 {
+    N::User {
+        name: String,
+        age: I32,
+        email: String,
+        active: Boolean DEFAULT true
+    }
+}
+```
+
+```hql Migration
+MIGRATION schema::1 => schema::2 {
+    N::User => N::User {
+        name: name,
+        age: age,
+        email: "default@example.com",
+        active: true
+    }
+}
+```
+
+</CodeGroup>
+
+### Type Changes with Casting
+
+<CodeGroup>
+
+```hql Schema v1
+schema::1 {
+    N::Product {
+        price: String,
+        quantity: String
+    }
+}
+```
+
+```hql Schema v2
+schema::2 {
+    N::Product {
+        price: F32,
+        quantity: I32,
+        in_stock: Boolean
+    }
+}
+```
+
+```hql Migration
+MIGRATION schema::1 => schema::2 {
+    N::Product => N::Product {
+        price: price AS F32,
+        quantity: quantity AS I32,
+        in_stock: true
+    }
+}
+```
+
+</CodeGroup>
+
+### Entity Renaming and Restructuring
+
+<CodeGroup>
+
+```hql Schema v1
+schema::1 {
+    N::User {
+        name: String,
+        email: String
+    }
+    
+    N::Profile {
+        bio: String,
+        avatar: String
+    }
+    
+    E::HasProfile {
+        From: User,
+        To: Profile,
+    }
+}
+```
+
+```hql Schema v2
+schema::2 {
+    N::Account {
+        name: String,
+        email: String,
+        bio: String,
+        avatar: String,
+        created_at: Date
+    }
+}
+```
+
+```hql Migration
+MIGRATION schema::1 => schema::2 {
+    N::User => N::Account {
+        name: name,
+        email: email,
+        bio: "",
+        avatar: "",
+        created_at: NOW
+    }
+    
+    N::Profile => _:: {
+        // Delete Profile entities
+    }
+    
+    E::HasProfile => _:: {
+        // Delete HasProfile edges
+    }
+}
+```
+
+</CodeGroup>
+
+### Complex Multi-Entity Migration
+
+<CodeGroup>
+
+```hql Schema v2
+schema::2 {
+    N::User {
+        INDEX username: String,
+        full_name: String,
+        age: U32,
+        created_at: Date DEFAULT NOW,
+        last_login: Date
+    }
+    
+    E::Follows {
+        From: User,
+        To: User,
+        Properties: {
+            since: Date,
+            notifications: Boolean DEFAULT true
+        }
+    }
+    
+    V::Post {
+        content: String,
+        author_id: ID,
+        published: Boolean
+    }
+}
+```
+
+```hql Schema v3
+schema::3 {
+    N::User {
+        UNIQUE INDEX email: String,
+        INDEX username: String,
+        display_name: String,
+        age: U32,
+        account_created: Date,
+        last_seen: Date,
+        verified: Boolean DEFAULT false
+    }
+    
+    E::Follows {
+        From: User,
+        To: User,
+        Properties: {
+            followed_at: Date,
+            notify: Boolean
+        }
+    }
+    
+    V::Post {
+        text: String,
+        author_id: ID,
+        is_published: Boolean,
+        published_at: Date
+    }
+}
+```
+
+```hql Migration
+MIGRATION schema::2 => schema::3 {
+    N::User => N::User {
+        email: "user@example.com",
+        username: username,
+        display_name: full_name,
+        age: age,
+        account_created: created_at,
+        last_seen: last_login,
+        verified: false
+    }
+    
+    E::Follows => E::Follows {
+        Properties: {
+            followed_at: since,
+            notify: notifications
+        }
+    }
+    
+    V::Post => V::Post {
+        text: content,
+        author_id: author_id,
+        is_published: published,
+        published_at: NOW
+    }
+}
+```
+
+</CodeGroup>
+
+## Migration Workflow
+
+### 1. Define New Schema Version
+
+Create your new schema with version number:
+
+```hql
+schema::2 {
+    // New schema definition
+}
+```
+
+### 2. Create Migration
+
+Define how to transform data from old to new:
+
+```hql
+MIGRATION schema::1 => schema::2 {
+    // Transformation rules
+}
+```
+
+### 3. Test Migration
+
+Test your migration on a copy of production data:
+
+```bash
+helix migrate test --from 1 --to 2
+```
+
+### 4. Run Migration
+
+Execute the migration:
+
+```bash
+helix migrate run --to 2
+```
+
+## Migration Best Practices
+
+1. **Version incrementally**: Increment version numbers by 1 (1→2→3)
+2. **Provide defaults**: Always provide default values for new required fields
+3. **Test thoroughly**: Test migrations on copies of production data
+4. **Document changes**: Comment complex migrations
+5. **Backward compatibility**: Consider supporting multiple versions temporarily
+6. **Batch operations**: Migrations are automatically batched for performance
+7. **Type safety**: Use AS casting to ensure type correctness
+8. **Preserve relationships**: Carefully migrate edges to maintain graph structure
+
+## Validation
+
+HelixDB validates migrations at compile time:
+
+- Field types match schema definitions
+- All required fields are provided
+- Type casts are valid
+- Entity references are correct
+
+## Migration Limitations
+
+- Cannot migrate to non-sequential versions (1→3 requires 1→2→3)
+- Vector embeddings are not automatically regenerated
+- Complex data transformations may require custom code
+- Large migrations may take time to complete
+
+## Rollback Strategy
+
+To rollback a migration:
+
+1. Create reverse migration (v2 => v1)
+2. Test reverse migration
+3. Run rollback
+
+```hql
+MIGRATION schema::2 => schema::1 {
+    N::User => N::User {
+        name: name,
+        age: age
+        // Drop email, created_at fields
+    }
+}
+```
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Schema Definitions" icon="sitemap" href="/hql/schema">
+    Learn more about schema syntax
+  </Card>
+  <Card title="Query Syntax" icon="code" href="/hql/queries">
+    Write queries for your migrated schema
+  </Card>
+</CardGroup>

@@ -1,0 +1,456 @@
+---
+title: 'Python SDK'
+description: 'Use the official Python SDK to interact with HelixDB'
+---
+
+## Installation
+
+<CodeGroup>
+
+```bash pip
+pip install helix-py
+```
+
+```bash poetry
+poetry add helix-py
+```
+
+```bash pipenv
+pipenv install helix-py
+```
+
+</CodeGroup>
+
+## Quick Start
+
+```python
+from helix_py import HelixDB
+
+# Create a new HelixDB client
+client = HelixDB()
+
+# Execute a query
+result = client.query("getUser", {
+    "user_name": "John"
+})
+
+print(result)
+```
+
+## Client Configuration
+
+Create a HelixDB client with custom configuration:
+
+```python
+from helix_py import HelixDB
+
+# Default configuration (localhost:6969)
+client = HelixDB()
+
+# Custom host and port
+client = HelixDB(
+    host="your-helix-instance.com",
+    port=6969
+)
+
+# Custom base URL
+client = HelixDB(
+    base_url="https://your-helix-instance.com:6969"
+)
+```
+
+## Executing Queries
+
+The `query()` method executes your deployed HelixQL queries:
+
+```python
+# Query with parameters
+user = client.query("getUser", {
+    "user_name": "Alice"
+})
+
+# Query without parameters
+all_users = client.query("listUsers", {})
+```
+
+## Complete Examples
+
+### Creating and Querying Nodes
+
+Given this HelixQL schema and queries:
+
+```hql
+N::User {
+    INDEX name: String,
+    age: I32,
+}
+
+QUERY addUser(name: String, age: I32) =>
+    user <- AddN<User>({name: name, age: age})
+    RETURN user
+
+QUERY getUser(user_name: String) =>
+    user <- N<User>({name: user_name})
+    RETURN user
+```
+
+You can interact with them using Python:
+
+```python
+from helix_py import HelixDB
+
+client = HelixDB()
+
+def main():
+    # Add a new user
+    new_user = client.query("addUser", {
+        "name": "Alice",
+        "age": 25
+    })
+    print(f"Created user: {new_user}")
+
+    # Get the user back
+    user = client.query("getUser", {
+        "user_name": "Alice"
+    })
+    print(f"Retrieved user: {user}")
+
+if __name__ == "__main__":
+    main()
+```
+
+### Creating Edges Between Nodes
+
+Given this HelixQL schema:
+
+```hql
+N::User {
+    INDEX name: String,
+    age: I32,
+}
+
+E::Knows {
+    From: User,
+    To: User,
+    Properties: {
+        since: I32,
+    }
+}
+
+QUERY addFriendship(name1: String, name2: String, since: I32) =>
+    user1 <- N<User>({name: name1})
+    user2 <- N<User>({name: name2})
+    edge <- AddE<Knows>({since: since})::From(user1)::To(user2)
+    RETURN edge
+```
+
+Execute it with Python:
+
+```python
+friendship = client.query("addFriendship", {
+    "name1": "Alice",
+    "name2": "Bob",
+    "since": 2020
+})
+
+print(f"Created friendship: {friendship}")
+```
+
+### Working with Embeddings
+
+Given this HelixQL query with embeddings:
+
+```hql
+V::Chunk {
+    text_content: String,
+    order_in_document: U32,
+    metadata: String,
+    created_at: String,
+}
+
+N::Memory {
+    content: String,
+    title: String,
+    created_at: String,
+}
+
+E::HasChunk {
+    From: Memory,
+    To: Chunk,
+    Properties: {
+        similarity_score: F32,
+        created_at: String,
+    }
+}
+
+QUERY addChunkToMemory(
+    text_content: String,
+    order_in_document: U32,
+    metadata: String,
+    created_at: String
+) =>
+    chunk <- AddV<Chunk>(Embed(text_content), {
+        text_content: text_content,
+        order_in_document: order_in_document,
+        metadata: metadata,
+        created_at: created_at
+    })
+    
+    memory <- AddN<Memory>({
+        content: text_content,
+        title: text_content,
+        created_at: created_at,
+    })
+    
+    has_chunk <- AddE<HasChunk>({
+        similarity_score: 0.0,
+        created_at: created_at
+    })::From(memory)::To(chunk)
+    
+    RETURN chunk
+```
+
+Execute it with Python:
+
+```python
+import json
+from datetime import datetime
+
+chunk = client.query("addChunkToMemory", {
+    "text_content": "HelixDB is a graph-vector database built in Rust.",
+    "order_in_document": 0,
+    "metadata": json.dumps({"source": "docs"}),
+    "created_at": datetime.now().isoformat()
+})
+
+print(f"Created chunk: {chunk}")
+```
+
+### Vector Search
+
+Given a vector search query:
+
+```hql
+QUERY searchChunks(query_text: String, limit: U32) =>
+    chunks <- VectorSearch<Chunk>(Embed(query_text), limit)
+    RETURN chunks
+```
+
+Execute it with Python:
+
+```python
+results = client.query("searchChunks", {
+    "query_text": "graph database",
+    "limit": 10
+})
+
+print(f"Search results: {results}")
+```
+
+## Error Handling
+
+Always handle errors when executing queries:
+
+```python
+try:
+    result = client.query("getUser", {
+        "user_name": "NonExistentUser"
+    })
+    print(result)
+except Exception as error:
+    print(f"Query failed: {error}")
+```
+
+## Type Hints
+
+The SDK supports Python type hints for better IDE support:
+
+```python
+from helix_py import HelixDB
+from typing import Dict, Any
+
+client: HelixDB = HelixDB()
+
+def get_user(name: str) -> Dict[str, Any]:
+    return client.query("getUser", {"user_name": name})
+
+user = get_user("Alice")
+```
+
+## Best Practices
+
+### 1. Reuse Client Instances
+
+Create a single client instance and reuse it throughout your application:
+
+```python
+# db.py
+from helix_py import HelixDB
+
+db = HelixDB()
+
+# app.py
+from db import db
+
+user = db.query("getUser", {"user_name": "Alice"})
+```
+
+### 2. Environment Variables
+
+Use environment variables for configuration:
+
+```python
+import os
+from helix_py import HelixDB
+
+client = HelixDB(
+    host=os.getenv("HELIX_HOST", "localhost"),
+    port=int(os.getenv("HELIX_PORT", "6969"))
+)
+```
+
+### 3. Context Managers
+
+If the SDK supports context managers, use them for proper resource cleanup:
+
+```python
+from helix_py import HelixDB
+
+with HelixDB() as client:
+    user = client.query("getUser", {"user_name": "Alice"})
+    print(user)
+```
+
+## FastAPI Integration
+
+Use HelixDB with FastAPI:
+
+```python
+from fastapi import FastAPI, HTTPException
+from helix_py import HelixDB
+from pydantic import BaseModel
+
+app = FastAPI()
+client = HelixDB()
+
+class User(BaseModel):
+    name: str
+    age: int
+
+@app.get("/api/users/{name}")
+async def get_user(name: str):
+    try:
+        user = client.query("getUser", {"user_name": name})
+        return user
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/users")
+async def create_user(user: User):
+    try:
+        result = client.query("addUser", {
+            "name": user.name,
+            "age": user.age
+        })
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+```
+
+## Flask Integration
+
+Use HelixDB with Flask:
+
+```python
+from flask import Flask, jsonify, request
+from helix_py import HelixDB
+
+app = Flask(__name__)
+client = HelixDB()
+
+@app.route("/api/users/<name>", methods=["GET"])
+def get_user(name):
+    try:
+        user = client.query("getUser", {"user_name": name})
+        return jsonify(user)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/api/users", methods=["POST"])
+def create_user():
+    try:
+        data = request.get_json()
+        user = client.query("addUser", {
+            "name": data["name"],
+            "age": data["age"]
+        })
+        return jsonify(user), 201
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+if __name__ == "__main__":
+    app.run(debug=True)
+```
+
+## Django Integration
+
+Use HelixDB in Django views:
+
+```python
+# db.py
+from helix_py import HelixDB
+
+client = HelixDB()
+
+# views.py
+from django.http import JsonResponse
+from django.views.decorators.http import require_http_methods
+import json
+from .db import client
+
+@require_http_methods(["GET"])
+def get_user(request, name):
+    try:
+        user = client.query("getUser", {"user_name": name})
+        return JsonResponse(user)
+    except Exception as e:
+        return JsonResponse({"error": str(e)}, status=500)
+
+@require_http_methods(["POST"])
+def create_user(request):
+    try:
+        data = json.loads(request.body)
+        user = client.query("addUser", {
+            "name": data["name"],
+            "age": data["age"]
+        })
+        return JsonResponse(user, status=201)
+    except Exception as e:
+        return JsonResponse({"error": str(e)}, status=500)
+```
+
+## Async Support
+
+If the SDK supports async operations, use them with asyncio:
+
+```python
+import asyncio
+from helix_py import AsyncHelixDB
+
+async def main():
+    client = AsyncHelixDB()
+    
+    user = await client.query("getUser", {
+        "user_name": "Alice"
+    })
+    
+    print(user)
+
+asyncio.run(main())
+```
+
+## Resources
+
+- [GitHub Repository](https://github.com/HelixDB/helix-py)
+- [HelixQL Query Language](/documentation/hql/hql)
+- [SDK Overview](/sdks/overview)

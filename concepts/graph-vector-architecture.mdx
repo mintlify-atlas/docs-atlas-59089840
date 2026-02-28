@@ -1,0 +1,442 @@
+---
+title: Graph-Vector Architecture
+description: How HelixDB integrates graph and vector capabilities in a unified system
+---
+
+HelixDB's key innovation is the seamless integration of graph relationships and vector similarity search in a single storage engine. This eliminates the complexity and latency of synchronizing data across multiple databases.
+
+## The Problem with Separate Systems
+
+Traditional AI applications often use multiple databases:
+
+```
+┌─────────────┐     ┌──────────────┐     ┌──────────────┐
+│   App DB    │     │  Vector DB   │     │   Graph DB   │
+│  (Postgres) │ ←→  │  (Pinecone)  │ ←→  │    (Neo4j)   │
+└─────────────┘     └──────────────┘     └──────────────┘
+      ↓                    ↓                     ↓
+  Sync issues        Consistency lag        Complex joins
+```
+
+This creates several challenges:
+
+- **Data synchronization:** Keeping embeddings in sync with source data
+- **Consistency:** No ACID guarantees across systems
+- **Latency:** Network hops between databases
+- **Complexity:** Multiple APIs, query languages, and deployment models
+
+## HelixDB's Unified Approach
+
+HelixDB solves this by treating vectors as first-class graph citizens:
+
+```
+┌────────────────────────────────────────┐
+│              HelixDB                   │
+│  ┌──────────────┐  ┌──────────────┐   │
+│  │ Graph Engine │  │Vector Engine │   │
+│  │   (Nodes +   │←→│    (HNSW)    │   │
+│  │    Edges)    │  │              │   │
+│  └──────────────┘  └──────────────┘   │
+│           ↓              ↓             │
+│      ┌──────────────────────┐          │
+│      │  Shared LMDB Storage │          │
+│      └──────────────────────┘          │
+└────────────────────────────────────────┘
+```
+
+Vectors participate in the graph:
+- Have IDs like nodes
+- Can be connected by edges
+- Support properties
+- Live in the same transactional scope
+
+## Architectural Integration
+
+### Shared Storage Foundation
+
+Both graph and vector data use LMDB tables within the same environment:
+
+```rust
+pub struct HelixGraphStorage {
+    pub graph_env: Env,                    // Single LMDB environment
+    
+    // Graph tables
+    pub nodes_db: Database<U128<BE>, Bytes>,
+    pub edges_db: Database<U128<BE>, Bytes>,
+    pub out_edges_db: Database<Bytes, Bytes>,
+    pub in_edges_db: Database<Bytes, Bytes>,
+    
+    // Vector tables
+    pub vectors: VectorCore,               // HNSW index + embeddings
+    
+    // Additional features
+    pub secondary_indices: HashMap<...>,
+    pub bm25: Option<HBM25Config>,         // Keyword search
+}
+```
+
+This means:
+- **Single transaction scope:** Graph and vector operations are atomic
+- **Unified memory management:** Arena allocation across both engines
+- **No data duplication:** One source of truth
+
+### Vector as Graph Entity
+
+Vectors are represented as a special node type:
+
+```hql
+V::Chunk {
+    text_content: String,
+    order_in_document: U32,
+}
+```
+
+Behind the scenes, vectors have:
+
+1. **A unique ID** (u128 UUID)
+2. **Properties** (like nodes)
+3. **An embedding** (f64 array)
+4. **HNSW graph position** (multi-level connectivity)
+
+<Info>
+The `V::` prefix is syntactic sugar. Vectors are nodes that happen to have an associated embedding and participate in the HNSW index.
+</Info>
+
+### Bidirectional Integration
+
+Vectors can connect to nodes and vice versa:
+
+```hql
+// Node schema
+N::Document {
+    title: String,
+    content: String,
+}
+
+// Vector schema
+V::Chunk {
+    text: String,
+}
+
+// Edge connecting them
+E::Contains {
+    From: Document,    // Node
+    To: Chunk,         // Vector
+    Properties: {
+        chunk_index: U32,
+    }
+}
+```
+
+Query that uses both:
+
+```hql
+QUERY semanticDocumentSearch(query_text: String) =>
+    // 1. Vector similarity search
+    similar_chunks <- VS<Chunk>(Embed(query_text), 20)
+    
+    // 2. Traverse to parent documents
+    documents <- similar_chunks <-E<Contains>- N<Document>
+    
+    // 3. Graph aggregation
+    RETURN documents.title
+```
+
+<Tip>
+This query starts in vector space (semantic search) and transitions to graph space (relationship traversal) seamlessly.
+</Tip>
+
+## HNSW as a Graph
+
+The HNSW index itself is a graph structure stored alongside your data graph:
+
+### HNSW Structure
+
+```
+Level 2:  A ←→ C              (Sparse, long-range links)
+          ↓    ↓
+Level 1:  A ←→ B ←→ C ←→ D    (Medium density)
+          ↓    ↓    ↓    ↓
+Level 0:  A-B-C-D-E-F-G-H     (All vectors, short-range links)
+```
+
+**Storage:**
+
+```rust
+// HNSW edges table
+key = source_vector_id(16) | level(8) | sink_vector_id(16)
+value = ()  // Presence indicates edge
+```
+
+**Configuration:**
+
+```rust
+pub struct HNSWConfig {
+    pub m: usize,              // Max links per vector (5-48)
+    pub ef_construct: usize,   // Build quality (40-512)
+    pub ef: usize,             // Search quality (10-512)
+}
+```
+
+### Search Process
+
+HNSW search descends through layers:
+
+```rust
+fn search<'arena>(
+    query: &[f64],
+    k: usize,
+    label: &'arena str,
+) -> Result<Vec<HVector<'arena>>, VectorError> {
+    let mut entry_point = self.get_entry_point()?;
+    
+    // Descend from top level to level 1
+    for level in (1..=curr_level).rev() {
+        let nearest = self.search_level(
+            &query, 
+            &mut entry_point, 
+            ef, 
+            level
+        )?;
+        entry_point = nearest.pop();
+    }
+    
+    // Search level 0 for k nearest neighbors
+    let candidates = self.search_level(
+        &query,
+        &mut entry_point,
+        ef,
+        0
+    )?;
+    
+    Ok(candidates.take(k))
+}
+```
+
+<Note>
+The hierarchical structure enables logarithmic search complexity: O(log N) rather than O(N) for brute-force search.
+</Note>
+
+## Hybrid Query Patterns
+
+The graph-vector integration enables powerful query patterns:
+
+### Pattern 1: Vector Search → Graph Traversal
+
+Start with semantic similarity, then traverse relationships:
+
+```hql
+QUERY findRelatedUsers(query: String) =>
+    // Find semantically similar posts
+    posts <- VS<Post>(Embed(query), 10)
+    
+    // Find authors of those posts
+    authors <- posts <-E<AuthoredBy>- N<User>
+    
+    // Find their followers
+    followers <- authors -E<Follows>-> N<User>
+    
+    RETURN followers
+```
+
+**Execution Flow:**
+1. HNSW search finds 10 similar post vectors
+2. Graph traversal walks `AuthoredBy` edges backward
+3. Graph traversal walks `Follows` edges forward
+4. Results returned
+
+### Pattern 2: Graph Filter → Vector Search
+
+Filter by graph properties, then search within subset:
+
+```hql
+QUERY searchUserPosts(user_email: String, query: String) =>
+    // Find user by indexed property
+    user <- N<User>({email: user_email})
+    
+    // Get all their posts
+    user_posts <- user -E<AuthoredBy>-> N<Post>
+    
+    // Extract post IDs to filter vector search
+    post_ids <- user_posts.id
+    
+    // Vector search within those posts only
+    results <- VS<Post>(Embed(query), 10, filter: post_ids)
+    
+    RETURN results
+```
+
+**Execution Flow:**
+1. Index lookup finds user node
+2. Graph traversal gets user's posts
+3. Vector search restricted to those post IDs
+4. Filtered results returned
+
+<Tip>
+Filtering vector search by graph predicates dramatically improves precision in multi-tenant or permission-aware systems.
+</Tip>
+
+### Pattern 3: Multi-Hop Hybrid Traversal
+
+Alternate between vector and graph operations:
+
+```hql
+QUERY expandSemanticContext(seed_text: String) =>
+    // Initial vector search
+    seed_chunks <- VS<Chunk>(Embed(seed_text), 5)
+    
+    // Traverse to parent documents
+    docs <- seed_chunks <-E<HasChunk>- N<Document>
+    
+    // Get related documents via graph
+    related_docs <- docs -E<References>-> N<Document>
+    
+    // Get chunks from related documents
+    related_chunks <- related_docs -E<HasChunk>-> V<Chunk>
+    
+    // Final vector search within related chunks
+    final_results <- VS<Chunk>(
+        Embed(seed_text), 
+        10,
+        filter: related_chunks.id
+    )
+    
+    RETURN final_results
+```
+
+**Execution Flow:**
+1. Vector → Graph → Graph → Vector
+2. Progressively expands semantic context through relationships
+3. Final vector search is graph-informed
+
+## Performance Characteristics
+
+### Vector Operations
+
+| Operation | Complexity | Notes |
+|-----------|------------|-------|
+| Insert | O(log N × M × ef_construct) | HNSW insertion |
+| Search | O(log N × ef) | Multi-layer descent |
+| Delete | O(1) | Soft delete (mark as deleted) |
+
+### Graph Operations
+
+| Operation | Complexity | Notes |
+|-----------|------------|-------|
+| Add Node | O(1) | Direct LMDB write |
+| Add Edge | O(1) | Update adjacency lists |
+| Traverse | O(degree) | Follow adjacency |
+| Index Lookup | O(log N) | B+ tree search |
+
+### Hybrid Operations
+
+**Vector → Graph:**
+```
+Vector search: O(log N × ef)  ← HNSW search
+      ↓
+Graph traverse: O(k × degree)  ← Walk from k results
+```
+
+**Graph → Vector:**
+```
+Graph traverse: O(degree)      ← Follow edges
+      ↓
+Filter vector search: O(log M × ef)  ← Search within M filtered vectors
+```
+
+<Info>
+The unified storage means there's no network latency between graph and vector operations, unlike multi-database architectures.
+</Info>
+
+## Transaction Semantics
+
+All operations share ACID properties:
+
+```hql
+QUERY atomicMemoryUpdate(doc_id: ID, new_text: String) =>
+    // All operations in single transaction
+    doc <- N<Document>(doc_id)
+    
+    // Delete old chunks
+    old_chunks <- doc -E<HasChunk>-> V<Chunk>
+    DropV(old_chunks)
+    
+    // Add new chunks
+    new_chunk <- AddV<Chunk>(Embed(new_text), {
+        text: new_text
+    })
+    edge <- AddE<HasChunk>()::From(doc)::To(new_chunk)
+    
+    // Update document
+    updated_doc <- UPDATE doc SET { content: new_text }
+    
+    RETURN updated_doc
+    // Either all operations succeed, or all are rolled back
+```
+
+<Note>
+LMDB's MVCC ensures readers see a consistent snapshot even while writes are in progress.
+</Note>
+
+## Built-in Features
+
+### Embedding Generation
+
+The `Embed()` function abstracts embedding generation:
+
+```hql
+chunk <- AddV<Chunk>(Embed(text), {...})
+```
+
+HelixDB handles:
+- Calling the configured embedding model
+- Normalizing vectors (if required)
+- Storing embeddings efficiently
+
+### Keyword Search (BM25)
+
+HelixDB also includes BM25 for keyword search:
+
+```hql
+keyword_results <- BM25<Post>("rust database performance", 10)
+vector_results <- VS<Post>(Embed("fast database systems"), 10)
+combined <- RRF(keyword_results, vector_results)  // Reciprocal Rank Fusion
+```
+
+This enables hybrid search combining:
+- Exact keyword matching (BM25)
+- Semantic similarity (HNSW)
+- Graph relationships (traversal)
+
+### Reranking
+
+Results from vector search can be reranked:
+
+```hql
+initial_results <- VS<Chunk>(Embed(query), 100)
+reranked <- Rerank(initial_results, query, 10)
+```
+
+## Why This Matters
+
+The graph-vector architecture enables use cases that are difficult or impossible with separate systems:
+
+1. **RAG with relationship awareness:** Retrieve documents based on semantic similarity AND organizational structure
+2. **Multi-tenant vector search:** Efficiently partition vector search by user/organization via graph edges
+3. **Contextual embeddings:** Store chunks as vectors while maintaining document hierarchy
+4. **Agent memory:** Combine episodic memory (vectors) with structured knowledge (graph)
+
+<CardGroup cols={2}>
+  <Card title="Data Model" href="/concepts/data-model" icon="database">
+    Deep dive into nodes, edges, and vectors
+  </Card>
+  <Card title="Query Patterns" href="/documentation/hql/queries" icon="code">
+    Learn to write hybrid queries
+  </Card>
+  <Card title="RAG Guide" href="/guides/rag" icon="book">
+    Build retrieval-augmented generation systems
+  </Card>
+  <Card title="Performance Tuning" href="/guides/performance" icon="gauge">
+    Optimize HNSW and graph queries
+  </Card>
+</CardGroup>

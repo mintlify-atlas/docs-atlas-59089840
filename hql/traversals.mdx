@@ -1,0 +1,583 @@
+---
+title: 'Graph Traversals'
+description: 'Navigate and query graph relationships in HelixQL'
+---
+
+## Traversal Basics
+
+Graph traversals allow you to navigate relationships between nodes and edges using the `::` operator.
+
+<ParamField path="::" type="operator">
+  Chains traversal steps together in a pipeline
+</ParamField>
+
+```hql
+QUERY GetFriends(userId: ID) =>
+    friends <- N<User>(userId)::Out<Knows>
+    RETURN friends
+```
+
+## Starting Points
+
+### Start from Nodes
+
+<CodeGroup>
+
+```hql By ID
+QUERY Example(id: ID) =>
+    node <- N<User>(id)
+    RETURN node
+```
+
+```hql By Multiple IDs
+QUERY Example(id1: ID, id2: ID) =>
+    nodes <- N<User>(id1, id2)
+    RETURN nodes
+```
+
+```hql All Nodes
+QUERY Example() =>
+    nodes <- N<User>
+    RETURN nodes
+```
+
+```hql By Index
+QUERY Example(email: String) =>
+    node <- N<User>({email: email})
+    RETURN node
+```
+
+</CodeGroup>
+
+### Start from Edges
+
+<CodeGroup>
+
+```hql By ID
+QUERY Example(id: ID) =>
+    edge <- E<Knows>(id)
+    RETURN edge
+```
+
+```hql All Edges
+QUERY Example() =>
+    edges <- E<Knows>
+    RETURN edges
+```
+
+```hql By Type Filter
+QUERY Example() =>
+    edges <- E<Knows, Follows>
+    RETURN edges
+```
+
+</CodeGroup>
+
+### Start from Vectors
+
+```hql
+QUERY Example(id: ID) =>
+    vector <- V<Document>(id)
+    RETURN vector
+```
+
+## Edge Traversals
+
+### Outgoing Edges
+
+Get edges going out from a node:
+
+```hql
+QUERY GetOutgoingEdges(userId: ID) =>
+    edges <- N<User>(userId)::OutE<Knows>
+    RETURN edges
+```
+
+<ParamField path="OutE<Type>" type="traversal">
+  Gets outgoing edges of specified type(s)
+</ParamField>
+
+### Incoming Edges
+
+Get edges coming into a node:
+
+```hql
+QUERY GetIncomingEdges(userId: ID) =>
+    edges <- N<User>(userId)::InE<Knows>
+    RETURN edges
+```
+
+<ParamField path="InE<Type>" type="traversal">
+  Gets incoming edges of specified type(s)
+</ParamField>
+
+### Multiple Edge Types
+
+```hql
+QUERY GetAllRelationships(userId: ID) =>
+    edges <- N<User>(userId)::OutE<Knows, Follows, Likes>
+    RETURN edges
+```
+
+## Node Traversals
+
+### Out (Outgoing Neighbors)
+
+Get nodes connected by outgoing edges:
+
+```hql
+QUERY GetFriends(userId: ID) =>
+    friends <- N<User>(userId)::Out<Knows>
+    RETURN friends
+```
+
+<ParamField path="Out<Type>" type="traversal">
+  Gets destination nodes via outgoing edges
+</ParamField>
+
+### In (Incoming Neighbors)
+
+Get nodes connected by incoming edges:
+
+```hql
+QUERY GetFollowers(userId: ID) =>
+    followers <- N<User>(userId)::In<Follows>
+    RETURN followers
+```
+
+<ParamField path="In<Type>" type="traversal">
+  Gets source nodes via incoming edges
+</ParamField>
+
+## Edge Endpoint Navigation
+
+### FromN (Source Node)
+
+Get the source node of an edge:
+
+```hql
+QUERY GetEdgeSource(edgeId: ID) =>
+    source <- E<Knows>(edgeId)::FromN
+    RETURN source
+```
+
+<ParamField path="FromN" type="traversal">
+  Gets the source node of an edge
+</ParamField>
+
+### ToN (Destination Node)
+
+Get the destination node of an edge:
+
+```hql
+QUERY GetEdgeDestination(edgeId: ID) =>
+    dest <- E<Knows>(edgeId)::ToN
+    RETURN dest
+```
+
+<ParamField path="ToN" type="traversal">
+  Gets the destination node of an edge
+</ParamField>
+
+## Chained Traversals
+
+Combine multiple traversal steps:
+
+<CodeGroup>
+
+```hql Friends of Friends
+QUERY GetFriendsOfFriends(userId: ID) =>
+    fof <- N<User>(userId)
+        ::Out<Knows>
+        ::Out<Knows>
+    RETURN fof
+```
+
+```hql Edge to Node to Edge
+QUERY GetRelatedEdges(userId: ID) =>
+    edges <- N<User>(userId)
+        ::OutE<Knows>
+        ::ToN
+        ::OutE<Likes>
+    RETURN edges
+```
+
+```hql Complex Chain
+QUERY ComplexTraversal(userId: ID) =>
+    results <- N<User>(userId)
+        ::Out<Knows>              // Get friends
+        ::OutE<Authored>          // Get their authored edges
+        ::ToN                     // Get the posts
+        ::WHERE(_::{published}::EQ(true))
+        ::ORDER<Desc>(_::{created_at})
+        ::RANGE(0, 10)
+    RETURN results
+```
+
+</CodeGroup>
+
+## Shortest Path
+
+### Basic Shortest Path
+
+Find shortest path between two nodes:
+
+```hql
+QUERY FindPath(startId: ID, endId: ID) =>
+    path <- N<User>(startId)::ShortestPath<Knows>::To(endId)
+    RETURN path
+```
+
+<ParamField path="ShortestPath<EdgeType>" type="algorithm">
+  Finds shortest path using BFS by default
+</ParamField>
+
+### ShortestPathBFS
+
+Explicit breadth-first search:
+
+```hql
+QUERY FindPathBFS(startId: ID, endId: ID) =>
+    path <- N<Location>(startId)::ShortestPathBFS<Route>::To(endId)
+    RETURN path
+```
+
+<ParamField path="ShortestPathBFS<EdgeType>" type="algorithm">
+  Finds shortest path using breadth-first search
+</ParamField>
+
+### ShortestPathDijkstras
+
+Weighted shortest path with custom edge weights:
+
+<CodeGroup>
+
+```hql Simple Weight
+QUERY FindWeightedPath(startId: ID, endId: ID) =>
+    path <- N<Location>(startId)
+        ::ShortestPathDijkstras<Route>(_::{distance})
+        ::To(endId)
+    RETURN path
+```
+
+```hql Complex Weight
+QUERY FindOptimalRoute(startId: ID, endId: ID) =>
+    path <- N<Location>(startId)
+        ::ShortestPathDijkstras<Route>(
+            MUL(
+                _::{distance},
+                ADD(1, DIV(_::{traffic_factor}, 10))
+            )
+        )
+        ::To(endId)
+    RETURN path
+```
+
+```hql Multi-Factor Weight
+QUERY FindBestPath(startId: ID, endId: ID) =>
+    path <- N<Location>(startId)
+        ::ShortestPathDijkstras<Route>(
+            ADD(
+                MUL(_::{distance}, 0.4),
+                ADD(
+                    MUL(_::FromN::{traffic_factor}, 0.3),
+                    MUL(SUB(1, _::{reliability}), 0.3)
+                )
+            )
+        )
+        ::To(endId)
+    RETURN path
+```
+
+</CodeGroup>
+
+<ParamField path="ShortestPathDijkstras<EdgeType>" type="algorithm">
+  Finds shortest path using Dijkstra's algorithm with custom weights
+</ParamField>
+
+### ShortestPathAStar
+
+A* algorithm with heuristic:
+
+```hql
+QUERY FindPathAStar(startId: ID, endId: ID) =>
+    path <- N<Location>(startId)
+        ::ShortestPathAStar<Route>(
+            _::{distance},
+            "euclidean_distance"
+        )
+        ::To(endId)
+    RETURN path
+```
+
+<ParamField path="ShortestPathAStar<EdgeType>" type="algorithm">
+  Finds shortest path using A* algorithm with heuristic function
+</ParamField>
+
+### Path Direction
+
+<CodeGroup>
+
+```hql To Target
+QUERY PathTo(startId: ID, endId: ID) =>
+    path <- N<User>(startId)::ShortestPath<Knows>::To(endId)
+    RETURN path
+```
+
+```hql From Source
+QUERY PathFrom(startId: ID, endId: ID) =>
+    path <- N<User>(startId)::ShortestPath<Knows>::From(endId)
+    RETURN path
+```
+
+```hql Bidirectional
+QUERY PathBoth(startId: ID, endId: ID) =>
+    path <- N<User>(startId)
+        ::ShortestPath<Knows>
+        ::To(endId)
+        ::From(endId)
+    RETURN path
+```
+
+</CodeGroup>
+
+## Math Functions in Traversals
+
+Use math functions for custom weights and calculations:
+
+<ParamField path="ADD(a, b)" type="function">
+  Addition
+</ParamField>
+
+<ParamField path="SUB(a, b)" type="function">
+  Subtraction
+</ParamField>
+
+<ParamField path="MUL(a, b)" type="function">
+  Multiplication
+</ParamField>
+
+<ParamField path="DIV(a, b)" type="function">
+  Division
+</ParamField>
+
+<ParamField path="POW(base, exp)" type="function">
+  Exponentiation
+</ParamField>
+
+<ParamField path="SQRT(n)" type="function">
+  Square root
+</ParamField>
+
+<ParamField path="ABS(n)" type="function">
+  Absolute value
+</ParamField>
+
+<ParamField path="MIN(a, b, ...)" type="function">
+  Minimum value
+</ParamField>
+
+<ParamField path="MAX(a, b, ...)" type="function">
+  Maximum value
+</ParamField>
+
+### Example: Time Decay Weight
+
+```hql
+QUERY FindFreshRoute(startId: ID, endId: ID) =>
+    // Prefer recently updated routes
+    path <- N<Location>(startId)
+        ::ShortestPathDijkstras<Route>(
+            MUL(
+                _::{distance},
+                POW(0.95, DIV(_::{days_since_update}, 30))
+            )
+        )
+        ::To(endId)
+    RETURN path
+```
+
+## Object Remapping
+
+### Select Fields
+
+```hql
+QUERY GetUserNames() =>
+    users <- N<User>::{name, age}
+    RETURN users
+```
+
+<ParamField path="::{fields}" type="operator">
+  Projects only specified fields
+</ParamField>
+
+### Exclude Fields
+
+```hql
+QUERY GetUsersWithoutEmail() =>
+    users <- N<User>::!{email, password}
+    RETURN users
+```
+
+<ParamField path="::!{fields}" type="operator">
+  Excludes specified fields
+</ParamField>
+
+### Rename Fields
+
+```hql
+QUERY GetUserData(userId: ID) =>
+    data <- N<User>(userId)::{
+        user_name: name,
+        user_age: age,
+        user_id: ID
+    }
+    RETURN data
+```
+
+### Nested Traversals in Mapping
+
+```hql
+QUERY GetUserWithFriends(userId: ID) =>
+    data <- N<User>(userId)::{
+        name: name,
+        age: age,
+        friends: _::Out<Knows>::{name}
+    }
+    RETURN data
+```
+
+### Closure Mapping
+
+Apply transformations to collections:
+
+```hql
+QUERY GetUserNamesArray() =>
+    users <- N<User>
+    names <- users::|user|{name: user.name}
+    RETURN names
+```
+
+<ParamField path="::|var|" type="operator">
+  Closure operator for iterating over collections
+</ParamField>
+
+## Intersect
+
+Find common elements between traversals:
+
+```hql
+QUERY FindMutualFriends(user1Id: ID, user2Id: ID) =>
+    user1Friends <- N<User>(user1Id)::Out<Knows>
+    mutualFriends <- user1Friends::INTERSECT(
+        N<User>(user2Id)::Out<Knows>
+    )
+    RETURN mutualFriends
+```
+
+<ParamField path="INTERSECT()" type="operation">
+  Returns elements present in both traversals
+</ParamField>
+
+## Accessing Properties
+
+### Node Properties
+
+```hql
+QUERY GetUserAge(userId: ID) =>
+    age <- N<User>(userId)::{age}
+    RETURN age
+```
+
+### Edge Properties
+
+```hql
+QUERY GetFriendshipDate(userId: ID) =>
+    dates <- N<User>(userId)::OutE<Knows>::{since}
+    RETURN dates
+```
+
+### ID Access
+
+```hql
+QUERY GetUserIds() =>
+    ids <- N<User>::ID
+    RETURN ids
+```
+
+<ParamField path="::ID" type="accessor">
+  Returns the ID of entities
+</ParamField>
+
+## Complete Examples
+
+### Social Network Query
+
+```hql
+QUERY GetSocialNetwork(userId: ID, depth: I32) =>
+    user <- N<User>(userId)
+    
+    // Get friends
+    friends <- user::Out<Knows>
+    
+    // Get friends of friends
+    fof <- friends::Out<Knows>
+    
+    // Get mutual friends
+    mutualFriends <- friends::INTERSECT(
+        fof::Out<Knows>
+    )
+    
+    // Get posts from friends
+    friendPosts <- friends
+        ::OutE<Authored>
+        ::ToN
+        ::WHERE(_::{published}::EQ(true))
+        ::ORDER<Desc>(_::{created_at})
+        ::RANGE(0, 20)
+    
+    RETURN {
+        user: user::{name, age},
+        friend_count: friends::COUNT,
+        mutual_count: mutualFriends::COUNT,
+        recent_posts: friendPosts
+    }
+```
+
+### Route Optimization
+
+```hql
+QUERY OptimalRoute(startId: ID, endId: ID) =>
+    // Find path optimizing distance, traffic, and reliability
+    path <- N<Location>(startId)
+        ::ShortestPathDijkstras<Route>(
+            ADD(
+                MUL(_::{distance}, 0.5),
+                ADD(
+                    MUL(_::FromN::{traffic_factor}, 0.3),
+                    MUL(SUB(1, _::{reliability}), 0.2)
+                )
+            )
+        )
+        ::To(endId)
+    
+    // Get route details
+    details <- path::{
+        total_distance: SUM(_::{distance}),
+        avg_reliability: AVG(_::{reliability}),
+        locations: _::FromN::{name}
+    }
+    
+    RETURN details
+```
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Vector Search" icon="magnifying-glass" href="/hql/vectors">
+    Learn about vector operations and semantic search
+  </Card>
+  <Card title="Query Syntax" icon="code" href="/hql/queries">
+    Master query fundamentals
+  </Card>
+</CardGroup>
